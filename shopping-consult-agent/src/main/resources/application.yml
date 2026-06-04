@@ -1,0 +1,65 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: shopping-consult-agent
+  ai:
+    dashscope:
+      api-key: ${SPRING_AI_DASHSCOPE_API_KEY:}
+      chat:
+        options:
+          model: ${SPRING_AI_DASHSCOPE_CHAT_MODEL:qwen-plus}
+    alibaba:
+      a2a:
+        nacos:
+          server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+          username: ${NACOS_USERNAME:nacos}
+          password: ${NACOS_PASSWORD:nacos}
+          discovery:
+            enabled: false
+        server:
+          card:
+            name: consult_agent
+            description: 在线电商导购咨询助手
+      mcp:
+        nacos:
+          namespace: ${NACOS_NAMESPACE:public}
+          server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+          username: ${NACOS_USERNAME:nacos}
+          password: ${NACOS_PASSWORD:nacos}
+          client:
+            enabled: ${NACOS_CLIENT_ENABLED:true}
+            sse:
+              connections:
+                catalog-mcp-server:
+                  service-name: catalog-mcp-server
+                  version: 0.0.1
+                inventory-mcp-server:
+                  service-name: inventory-mcp-server
+                  version: 0.0.1
+                promotion-mcp-server:
+                  service-name: promotion-mcp-server
+                  version: 0.0.1
+
+agent:
+  prompts:
+    consult-agent-instruction: |
+      你是电商导购咨询助手。
+      请根据用户输入、历史对话和用户画像提供推荐，并在需要时调用工具。
+      你可调用的工具包括：
+      - searchProduct：搜索商品
+      - getProductDetail：查询商品详情
+      - checkInventory：查询库存
+      - getPromotions：查询优惠
+      回复要求：
+      1) 先给推荐结论，再给简要理由；
+      2) 如果信息不足，先追问预算/场景/偏好；
+      3) 对比时输出清晰对比项；
+      4) 返回结构化 memoryPatch 候选，字段仅可包含 budgetMin/budgetMax/scene/brandPreferences/dislikes/notes。
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

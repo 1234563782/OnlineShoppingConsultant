@@ -1,0 +1,27 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: catalog-mcp-server
+  ai:
+    mcp:
+      server:
+        name: catalog-mcp-server
+        version: 0.0.1
+        type: SYNC
+    alibaba:
+      mcp:
+        nacos:
+          server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+          namespace: ${NACOS_NAMESPACE:public}
+          username: ${NACOS_USERNAME:nacos}
+          password: ${NACOS_PASSWORD:nacos}
+          register:
+            enabled: ${NACOS_REGISTER_ENABLED:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

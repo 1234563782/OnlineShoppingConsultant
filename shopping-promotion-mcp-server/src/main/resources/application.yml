@@ -1,0 +1,27 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: promotion-mcp-server
+  ai:
+    mcp:
+      server:
+        name: promotion-mcp-server
+        version: 0.0.1
+        type: SYNC
+    alibaba:
+      mcp:
+        nacos:
+          server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+          namespace: ${NACOS_NAMESPACE:public}
+          username: ${NACOS_USERNAME:nacos}
+          password: ${NACOS_PASSWORD:nacos}
+          register:
+            enabled: ${NACOS_REGISTER_ENABLED:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

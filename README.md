@@ -1,22 +1,50 @@
-<<<<<<< HEAD
 # Online Shopping Consultant
 
 电商智能导购多 Agent 系统（Spring Boot + Spring AI Alibaba）。
 
-## 架构（规划）
+## 当前架构（初版）
 
-- **shopping-orchestrator**：总控 Agent，对外 API + Web 聊天页
-- **shopping-consult-agent**：咨询导购 Agent
-- **shopping-memory-service**：用户长期画像（H2）
-- **shopping-catalog / inventory / promotion**：工具服务
+- `shopping-orchestrator`：总控 Agent，对外 `POST /api/v1/chat` + Web 聊天页
+- `shopping-consult-agent`：咨询导购 Agent（A2A Server）
+- `shopping-memory-service`：用户长期画像（H2，REST）
+- `shopping-catalog-mcp-server`：商品搜索/详情工具（MCP）
+- `shopping-inventory-mcp-server`：库存工具（MCP）
+- `shopping-promotion-mcp-server`：优惠工具（MCP）
 
-会话多轮上下文：Redis。服务发现：Nacos（后续）。
+## Nacos 用法
 
-## 仓库
+初版按 `spring-ai-alibaba-multi-agent-demo-main` 对齐：
 
-https://github.com/1234563782/OnlineShoppingConsultant
+- **A2A 注册发现**：consult 注册 `consult_agent`；orchestrator 通过 `AgentCardProvider` 发现
+- **MCP 注册发现**：catalog/inventory/promotion 注册为 MCP 服务；consult 通过 `loadbalancedMcpSyncToolCallbacks` 调用
 
-## 开发状态
+## 运行依赖
 
-项目初始化中，实现细节见 Cursor 计划文档。
+- Redis：会话上下文（`6379`）
+- Nacos：A2A + MCP 注册发现（`8848`、`9848`）
 
+使用根目录 compose 启动：
+
+```bash
+docker compose up -d
+```
+
+## 模块端口
+
+- orchestrator: `8087`
+- consult-agent: `8081`
+- memory-service: `8086`
+- catalog-mcp-server: `8083`
+- inventory-mcp-server: `8084`
+- promotion-mcp-server: `8085`
+
+## 环境变量
+
+复制 `.env.example` 到 `.env` 并按需配置：
+
+- `SPRING_AI_DASHSCOPE_API_KEY`
+- `NACOS_SERVER_ADDR`
+- `NACOS_USERNAME`
+- `NACOS_PASSWORD`
+
+> 不要把 `.env` 提交到 Git。

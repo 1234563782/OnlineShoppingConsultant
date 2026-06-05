@@ -1,12 +1,15 @@
 package com.onlineshopping.orchestrator.dto;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class SessionState {
 
     private String userId;
     private List<Turn> turns = new ArrayList<>();
+    private Map<String, Object> sessionContext = new HashMap<>();
     private String updatedAt;
 
     public String getUserId() {
@@ -23,6 +26,14 @@ public class SessionState {
 
     public void setTurns(List<Turn> turns) {
         this.turns = turns;
+    }
+
+    public Map<String, Object> getSessionContext() {
+        return sessionContext;
+    }
+
+    public void setSessionContext(Map<String, Object> sessionContext) {
+        this.sessionContext = sessionContext;
     }
 
     public String getUpdatedAt() {

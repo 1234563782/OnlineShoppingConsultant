@@ -15,7 +15,7 @@ public class MemoryClientService {
 
     private final RestTemplate restTemplate;
 
-    @Value("${shopping.memory.base-url:http://localhost:8082}")
+    @Value("${shopping.memory.base-url:http://localhost:8086}")
     private String memoryBaseUrl;
 
     public MemoryClientService(RestTemplate restTemplate) {

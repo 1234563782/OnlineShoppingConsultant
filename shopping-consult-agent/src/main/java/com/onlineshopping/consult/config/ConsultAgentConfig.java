@@ -44,7 +44,8 @@ public class ConsultAgentConfig {
 
         KeyStrategyFactory stateFactory = () -> {
             HashMap<String, KeyStrategy> map = new HashMap<>();
-            map.put("messages", new ReplaceStrategy());
+            map.put("query", new ReplaceStrategy());
+            map.put("result", new ReplaceStrategy());
             return map;
         };
 
@@ -54,8 +55,8 @@ public class ConsultAgentConfig {
                 .model(chatModel)
                 .state(stateFactory)
                 .instruction(promptConfig.getConsultAgentInstruction())
-                .inputKey("messages")
-                .outputKey("messages")
+                .inputKey("query")
+                .outputKey("result")
                 .tools(tools)
                 .build();
     }

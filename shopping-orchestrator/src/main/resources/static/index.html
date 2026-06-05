@@ -39,7 +39,7 @@
   send.onclick = async () => {
     const body = {
       userId: uid.value,
-      sessionId: sid.value || null,
+      sessionId: (!sid.value || sid.value === "undefined") ? null : sid.value,
       message: msg.value
     };
     append("你: " + body.message);
@@ -49,7 +49,7 @@
       body: JSON.stringify(body)
     });
     const data = await resp.json();
-    sid.value = data.sessionId;
+    sid.value = data.sessionId || "";
     append("助手: " + data.reply);
     msg.value = "";
   };

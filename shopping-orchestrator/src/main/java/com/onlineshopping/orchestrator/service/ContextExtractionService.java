@@ -1,0 +1,110 @@
+package com.onlineshopping.orchestrator.service;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.stereotype.Service;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Service
+public class ContextExtractionService {
+
+    private final ChatClient chatClient;
+    private final ObjectMapper objectMapper;
+
+    public ContextExtractionService(ChatModel chatModel, ObjectMapper objectMapper) {
+        this.chatClient = ChatClient.builder(chatModel).build();
+        this.objectMapper = objectMapper;
+    }
+
+    public Map<String, Object> extractPatch(String userMessage, Map<String, Object> currentSessionContext) {
+        String prompt = """
+                你是电商导购系统的上下文抽取器，只输出严格 JSON，不要 markdown，不要解释。
+
+                请根据用户本轮输入和已有会话上下文，抽取“本轮明确表达的新信息或修正信息”。
+                如果用户没有提及某字段，该字段返回 null 或空数组，不要猜。
+                如果用户表达“不确定/先看看/随便看看”，设置 userUncertain=true。
+                如果用户只是寒暄，intentType=small_talk。
+                如果用户明显不是购物相关，intentType=non_shopping。
+                如果用户有购买/选购/对比/推荐诉求，intentType=shopping。
+
+                JSON schema:
+                {
+                  "intentType":"shopping|small_talk|non_shopping",
+                  "category":"手机/耳机/手表/电脑/平板等，未知为null",
+                  "budget":{"min":number|null,"max":number|null,"certainty":"STRICT|FLEXIBLE|UNKNOWN"},
+                  "scene":"string|null",
+                  "brandPreferences":["string"],
+                  "dislikes":["string"],
+                  "mustHave":["string"],
+                  "notes":"string|null",
+                  "userUncertain":boolean,
+                  "longTermMemoryPatch":{
+                    "brandPreferences":["用户明确长期喜欢/偏好的品牌"],
+                    "dislikes":["用户明确长期不喜欢/排斥的品牌或特征"],
+                    "notes":"稳定偏好或长期注意事项；本次预算、本次品类、本次临时场景不要写入"
+                  }
+                }
+                长期画像写入规则：
+                - 只有用户明确表达“我喜欢/我常用/我不要/以后都按这个/我比较在意”等稳定偏好，才写入 longTermMemoryPatch。
+                - 本次想买什么、本次预算、本次临时使用场景，只属于当前会话上下文，不要写入 longTermMemoryPatch。
+                - 不确定时 longTermMemoryPatch 返回空对象 {}。
+
+                已有会话上下文：
+                %s
+
+                用户本轮输入：
+                %s
+                """.formatted(currentSessionContext, userMessage);
+        try {
+            String content = chatClient.prompt()
+                    .user(prompt)
+                    .call()
+                    .content();
+            return parseJsonObject(content);
+        } catch (Exception ignored) {
+            return fallbackPatch(userMessage);
+        }
+    }
+
+    private Map<String, Object> parseJsonObject(String content) throws Exception {
+        if (content == null || content.isBlank()) {
+            return new HashMap<>();
+        }
+        try {
+            return objectMapper.readValue(content, new TypeReference<>() {
+            });
+        } catch (Exception first) {
+            Matcher matcher = Pattern.compile("\\{[\\s\\S]*\\}").matcher(content);
+            if (matcher.find()) {
+                return objectMapper.readValue(matcher.group(), new TypeReference<>() {
+                });
+            }
+            throw first;
+        }
+    }
+
+    private Map<String, Object> fallbackPatch(String userMessage) {
+        Map<String, Object> patch = new HashMap<>();
+        patch.put("intentType", "shopping");
+        patch.put("category", null);
+        Map<String, Object> budget = new HashMap<>();
+        budget.put("min", null);
+        budget.put("max", null);
+        budget.put("certainty", "UNKNOWN");
+        patch.put("budget", budget);
+        patch.put("scene", null);
+        patch.put("brandPreferences", java.util.List.of());
+        patch.put("dislikes", java.util.List.of());
+        patch.put("mustHave", java.util.List.of());
+        patch.put("notes", userMessage);
+        patch.put("userUncertain", false);
+        patch.put("longTermMemoryPatch", Map.of());
+        return patch;
+    }
+}

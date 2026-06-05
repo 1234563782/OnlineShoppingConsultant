@@ -26,7 +26,7 @@ public class SupervisorAgentConfig {
             strategy.put("input", new ReplaceStrategy());
             strategy.put("chat_id", new ReplaceStrategy());
             strategy.put("user_id", new ReplaceStrategy());
-            strategy.put("messages", new ReplaceStrategy());
+            strategy.put("output", new ReplaceStrategy());
             return strategy;
         };
 
@@ -42,7 +42,7 @@ public class SupervisorAgentConfig {
                 .state(stateFactory)
                 .description("协调导购咨询Agent完成用户导购问答")
                 .inputKey("input")
-                .outputKey("messages")
+                .outputKey("output")
                 .subAgents(List.of(consultAgent))
                 .build();
     }

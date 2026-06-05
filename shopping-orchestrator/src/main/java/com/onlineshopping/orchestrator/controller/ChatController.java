@@ -5,9 +5,13 @@ import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.LlmRoutingAgent;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.onlineshopping.orchestrator.dto.ChatRequest;
 import com.onlineshopping.orchestrator.dto.ChatResponse;
 import com.onlineshopping.orchestrator.dto.SessionState;
+import com.onlineshopping.orchestrator.service.ContextExtractionService;
+import com.onlineshopping.orchestrator.service.ContextMergeService;
 import com.onlineshopping.orchestrator.service.MemoryClientService;
 import com.onlineshopping.orchestrator.service.SessionStoreService;
 import jakarta.validation.Valid;
@@ -18,10 +22,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -30,15 +36,24 @@ public class ChatController {
     private final LlmRoutingAgent supervisorAgent;
     private final SessionStoreService sessionStoreService;
     private final MemoryClientService memoryClientService;
+    private final ContextExtractionService contextExtractionService;
+    private final ContextMergeService contextMergeService;
+    private final ObjectMapper objectMapper;
 
     public ChatController(
             @Qualifier("supervisorAgentBean") LlmRoutingAgent supervisorAgent,
             SessionStoreService sessionStoreService,
-            MemoryClientService memoryClientService
+            MemoryClientService memoryClientService,
+            ContextExtractionService contextExtractionService,
+            ContextMergeService contextMergeService,
+            ObjectMapper objectMapper
     ) {
         this.supervisorAgent = supervisorAgent;
         this.sessionStoreService = sessionStoreService;
         this.memoryClientService = memoryClientService;
+        this.contextExtractionService = contextExtractionService;
+        this.contextMergeService = contextMergeService;
+        this.objectMapper = objectMapper;
     }
 
     @PostMapping("/chat")
@@ -49,7 +64,57 @@ public class ChatController {
 
         SessionState sessionState = sessionStoreService.getSession(sessionId, request.getUserId());
         Map<String, Object> profile = memoryClientService.getProfile(request.getUserId());
-        String userInput = buildUserInput(request.getMessage(), request.getUserId(), profile, sessionState.getTurns());
+        Map<String, Object> extractedPatch = contextExtractionService.extractPatch(
+                request.getMessage(),
+                sessionState.getSessionContext()
+        );
+        Map<String, Object> sessionContext = contextMergeService.mergeSessionPatch(
+                sessionState.getSessionContext(),
+                extractedPatch
+        );
+        boolean allowLongTermFallback = shouldAllowLongTermFallback(sessionContext);
+        Map<String, Object> effectiveContext = contextMergeService.buildEffectiveContext(
+                sessionContext,
+                profile,
+                allowLongTermFallback
+        );
+        sessionState.setSessionContext(sessionContext);
+
+        String intentType = String.valueOf(effectiveContext.getOrDefault("intentType", "shopping"));
+        if ("small_talk".equalsIgnoreCase(intentType) || "non_shopping".equalsIgnoreCase(intentType)) {
+            String directReply = buildSmallTalkReply(request.getMessage());
+            sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), directReply);
+            ChatResponse response = new ChatResponse();
+            response.setSessionId(sessionId);
+            response.setReply(directReply);
+            response.setDebug(Map.of(
+                    "toolMode", "orchestrator_direct_reply",
+                    "reason", intentType,
+                    "sessionContext", sessionContext
+            ));
+            return response;
+        }
+
+        String clarification = buildClarificationIfNeeded(effectiveContext);
+        if (clarification != null) {
+            markAskedFields(sessionContext, effectiveContext);
+            sessionState.setSessionContext(sessionContext);
+            sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), clarification);
+            Map<String, Object> longTermMemoryPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
+            memoryClientService.mergePatch(request.getUserId(), longTermMemoryPatch);
+            ChatResponse response = new ChatResponse();
+            response.setSessionId(sessionId);
+            response.setReply(clarification);
+            response.setDebug(Map.of(
+                    "toolMode", "orchestrator_clarify",
+                    "sessionContext", sessionContext,
+                    "effectiveContext", effectiveContext,
+                    "longTermMemoryPatch", longTermMemoryPatch
+            ));
+            return response;
+        }
+
+        String userInput = buildUserInput(request.getMessage(), request.getUserId(), effectiveContext);
 
         RunnableConfig runnableConfig = RunnableConfig.builder()
                 .threadId(sessionId)
@@ -65,13 +130,18 @@ public class ChatController {
         Flux<NodeOutput> stream = compiledGraph.fluxStream(input, runnableConfig);
         List<NodeOutput> outputs = stream.collectList().block();
 
-        String reply = extractReply(outputs);
-        if (reply.isBlank()) {
-            reply = "我已收到你的需求。可以先告诉我预算和使用场景吗？";
+        String rawReply = extractReply(outputs);
+        AgentResult agentResult = parseAgentResult(rawReply);
+        String reply = agentResult.assistantReply();
+        if (isInvalidReply(reply)) {
+            reply = buildFallbackShoppingReply(effectiveContext);
+        }
+        if (hasBudgetValue(effectiveContext.get("budget")) && isAskingBudget(reply)) {
+            reply = "已记录你给出的预算信息，我继续基于预算和偏好给你推荐具体款式。";
         }
 
         sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), reply);
-        Map<String, Object> memoryPatch = extractMemoryPatch(reply);
+        Map<String, Object> memoryPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
         memoryClientService.mergePatch(request.getUserId(), memoryPatch);
 
         ChatResponse response = new ChatResponse();
@@ -79,16 +149,39 @@ public class ChatController {
         response.setReply(reply);
         response.setDebug(Map.of(
                 "toolMode", "a2a+nacos",
-                "memoryProfile", profile
+                "memoryProfile", profile,
+                "sessionContext", sessionContext,
+                "effectiveContext", effectiveContext,
+                "longTermMemoryPatch", memoryPatch
         ));
         return response;
     }
 
-    private String buildUserInput(String message, String userId, Map<String, Object> profile, List<SessionState.Turn> turns) {
-        return "userMessage: " + message
-                + "\nuserId: " + userId
-                + "\nmemoryProfile: " + profile
-                + "\nrecentTurns: " + turns;
+    private String buildUserInput(String message, String userId, Map<String, Object> effectiveContext) {
+        return """
+                请你作为导购咨询子Agent，基于结构化上下文回答。
+                返回严格JSON对象（不要markdown、不要代码块）：
+                {
+                  "assistantReply":"给用户看的自然语言回复",
+                  "memoryPatch":{
+                    "budgetMin":number|null,
+                    "budgetMax":number|null,
+                    "scene":"string|null",
+                    "brandPreferences":["string"],
+                    "dislikes":["string"],
+                    "notes":"string|null"
+                  }
+                }
+                规则：
+                1. effectiveContext 是主Agent已经整理好的本次咨询上下文，以它为准执行。
+                2. 已有字段不要重复追问；预算已知时禁止再问“预算多少”。
+                3. 推荐时必须给出具体款式（名称+大致价格+理由）。
+                4. memoryPatch 仅包含新增或更新字段，无则给空对象。
+                                
+                userId: %s
+                userMessage: %s
+                effectiveContext: %s
+                """.formatted(userId, message, effectiveContext);
     }
 
     private String extractReply(List<NodeOutput> outputs) {
@@ -107,12 +200,341 @@ public class ChatController {
         return builder.toString();
     }
 
-    private Map<String, Object> extractMemoryPatch(String reply) {
-        Map<String, Object> patch = new HashMap<>();
-        if (reply.contains("预算") && reply.contains("3000")) {
-            patch.put("budgetMin", 3000);
-            patch.put("budgetMax", 5000);
+    private Map<String, Object> buildConsultationSummary(
+            Map<String, Object> memoryProfile,
+            List<SessionState.Turn> turns,
+            String currentMessage
+    ) {
+        Map<String, Object> summary = new java.util.HashMap<>();
+        BudgetRange currentBudget = extractBudgetFromText(currentMessage);
+        BudgetRange sessionBudget = extractBudgetFromTurns(turns);
+        BudgetRange profileBudget = extractBudgetFromProfile(memoryProfile);
+        BudgetRange effectiveBudget = pickEffectiveBudget(currentBudget, sessionBudget, profileBudget);
+
+        summary.put("memoryProfile", memoryProfile);
+        summary.put("currentMessage", currentMessage);
+        summary.put("budgetKnown", effectiveBudget != null);
+        summary.put("budgetSource",
+                currentBudget != null ? "current_message"
+                        : sessionBudget != null ? "session_history" : profileBudget != null ? "long_term_profile" : "unknown");
+        if (effectiveBudget != null) {
+            summary.put("effectiveBudgetMin", effectiveBudget.min());
+            summary.put("effectiveBudgetMax", effectiveBudget.max());
+        }
+        summary.put("sceneKnown", memoryProfile.get("scene") != null || containsAny(currentMessage, "通勤", "运动", "办公", "游戏", "学习"));
+        summary.put("recentUserIntents", extractRecentUserIntents(turns));
+        return summary;
+    }
+
+    private boolean hasBudget(Map<String, Object> memoryProfile) {
+        return memoryProfile.get("budgetMin") != null || memoryProfile.get("budgetMax") != null;
+    }
+
+    private boolean containsBudgetSignal(String text) {
+        return text != null && (containsAny(text, "预算", "左右", "以内", "元", "块") || text.matches(".*\\d{3,}.*"));
+    }
+
+    private boolean containsAny(String text, String... words) {
+        if (text == null) {
+            return false;
+        }
+        for (String word : words) {
+            if (text.contains(word)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isAskingBudget(String reply) {
+        return reply != null && (reply.contains("预算多少") || reply.contains("请问预算") || reply.contains("预算是"));
+    }
+
+    private boolean isSmallTalkOrNonShopping(String message) {
+        if (message == null || message.isBlank()) {
+            return true;
+        }
+        String text = message.trim();
+        if (containsAny(text, "你好", "哈喽", "在吗", "谢谢", "辛苦了", "再见", "拜拜", "早上好", "晚上好")) {
+            return true;
+        }
+        boolean shoppingSignal = containsAny(text,
+                "买", "推荐", "预算", "耳机", "手机", "平板", "电脑", "手表",
+                "库存", "优惠", "对比", "品牌", "降噪", "防水", "续航", "参数");
+        return !shoppingSignal && text.length() <= 20;
+    }
+
+    private String buildSmallTalkReply(String message) {
+        if (message == null || message.isBlank()) {
+            return "你好，我是导购助手。告诉我你想买的品类、预算和使用场景，我就能给你推荐具体款式。";
+        }
+        String text = message.trim();
+        if (containsAny(text, "谢谢", "辛苦了")) {
+            return "不客气。你可以继续告诉我预算、场景或品牌偏好，我会继续帮你筛选。";
+        }
+        if (containsAny(text, "再见", "拜拜")) {
+            return "好的，随时来找我，我可以继续帮你选购。";
+        }
+        return "你好，我在。你想买什么品类？可以直接说预算、使用场景和偏好。";
+    }
+
+    private List<String> extractRecentUserIntents(List<SessionState.Turn> turns) {
+        List<String> intents = new ArrayList<>();
+        for (SessionState.Turn turn : turns) {
+            if ("user".equalsIgnoreCase(turn.getRole()) && turn.getContent() != null && !turn.getContent().isBlank()) {
+                intents.add(turn.getContent());
+            }
+        }
+        int size = intents.size();
+        return size <= 2 ? intents : intents.subList(size - 2, size);
+    }
+
+    private AgentResult parseAgentResult(String rawReply) {
+        if (rawReply == null || rawReply.isBlank()) {
+            return new AgentResult("", Map.of());
+        }
+        try {
+            Map<String, Object> parsed = objectMapper.readValue(rawReply, new TypeReference<>() {
+            });
+            String assistantReply = String.valueOf(parsed.getOrDefault("assistantReply", ""));
+            if (isInvalidReply(assistantReply)) {
+                Object alt = parsed.get("reply");
+                if (alt != null) {
+                    assistantReply = String.valueOf(alt);
+                }
+            }
+            Object patch = parsed.get("memoryPatch");
+            Map<String, Object> memoryPatch = patch instanceof Map<?, ?> p
+                    ? (Map<String, Object>) p
+                    : Map.of();
+            return new AgentResult(isInvalidReply(assistantReply) ? rawReply : assistantReply, memoryPatch);
+        } catch (Exception ignored) {
+            Matcher matcher = Pattern.compile("\\{[\\s\\S]*\\}").matcher(rawReply);
+            if (matcher.find()) {
+                String possibleJson = matcher.group();
+                try {
+                    Map<String, Object> parsed = objectMapper.readValue(possibleJson, new TypeReference<>() {
+                    });
+                    String assistantReply = String.valueOf(parsed.getOrDefault("assistantReply", ""));
+                    Object patch = parsed.get("memoryPatch");
+                    Map<String, Object> memoryPatch = patch instanceof Map<?, ?> p
+                            ? (Map<String, Object>) p
+                            : Map.of();
+                    if (!isInvalidReply(assistantReply)) {
+                        return new AgentResult(assistantReply, memoryPatch);
+                    }
+                } catch (Exception ignoredAgain) {
+                }
+            }
+            return new AgentResult(rawReply, Map.of());
+        }
+    }
+
+    private boolean isInvalidReply(String reply) {
+        if (reply == null) {
+            return true;
+        }
+        String normalized = reply.trim().toLowerCase();
+        return normalized.isBlank()
+                || "undefined".equals(normalized)
+                || "null".equals(normalized)
+                || "{}".equals(normalized)
+                || "[]".equals(normalized);
+    }
+
+    private String buildClarificationIfNeeded(Map<String, Object> effectiveContext) {
+        List<?> missingFields = effectiveContext.get("missingFields") instanceof List<?> list ? list : List.of();
+        boolean userUncertain = Boolean.TRUE.equals(effectiveContext.get("userUncertain"));
+        List<String> askedFields = normalizeStringList(effectiveContext.get("askedFields"));
+        if (missingFields.contains("category")) {
+            return "你想买什么品类？比如手机、耳机、电脑、平板或手表。";
+        }
+        if (missingFields.contains("budget") && !userUncertain && !askedFields.contains("budget")) {
+            return "收到，你想买%s。请补充一下大概预算；如果暂时不确定，也可以说“先看看”，我会按不同价位给你推荐。"
+                    .formatted(effectiveContext.get("category"));
+        }
+        if (missingFields.contains("scene") && !userUncertain && !askedFields.contains("scene")) {
+            return "这个%s主要用在什么场景？比如通勤、办公、学习、运动或游戏。"
+                    .formatted(effectiveContext.get("category"));
+        }
+        return null;
+    }
+
+    private boolean shouldAllowLongTermFallback(Map<String, Object> sessionContext) {
+        boolean userUncertain = Boolean.TRUE.equals(sessionContext.get("userUncertain"));
+        List<String> askedFields = normalizeStringList(sessionContext.get("askedFields"));
+        return userUncertain || askedFields.contains("budget") || askedFields.contains("scene");
+    }
+
+    private void markAskedFields(Map<String, Object> sessionContext, Map<String, Object> effectiveContext) {
+        List<?> missingFields = effectiveContext.get("missingFields") instanceof List<?> list ? list : List.of();
+        java.util.LinkedHashSet<String> askedFields = new java.util.LinkedHashSet<>(normalizeStringList(sessionContext.get("askedFields")));
+        for (Object field : missingFields) {
+            if (field != null) {
+                askedFields.add(field.toString());
+            }
+        }
+        sessionContext.put("askedFields", new ArrayList<>(askedFields));
+    }
+
+    private List<String> normalizeStringList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return new ArrayList<>();
+        }
+        List<String> result = new ArrayList<>();
+        for (Object item : list) {
+            if (item != null && !item.toString().isBlank()) {
+                result.add(item.toString());
+            }
+        }
+        return result;
+    }
+
+    private String buildFallbackShoppingReply(Map<String, Object> effectiveContext) {
+        Object category = effectiveContext.get("category");
+        Object budget = effectiveContext.get("budget");
+        if (hasValue(category)) {
+            if (hasBudgetValue(budget)) {
+                return "收到，你想买%s，我会基于当前预算、偏好和注意事项继续筛选具体款式。".formatted(category);
+            }
+            return "收到，你想买%s。请补充预算、品牌偏好或必须功能，我会给你推荐具体款式。".formatted(category);
+        }
+        return "我已收到你的需求。你可以告诉我想买的品类、预算和使用场景，我会给你推荐具体型号。";
+    }
+
+    private boolean hasValue(Object value) {
+        if (value == null) {
+            return false;
+        }
+        if (value instanceof String s) {
+            return !s.isBlank() && !"null".equalsIgnoreCase(s);
+        }
+        if (value instanceof List<?> list) {
+            return !list.isEmpty();
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Object item : map.values()) {
+                if (hasValue(item)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
+    private boolean hasBudgetValue(Object value) {
+        if (!(value instanceof Map<?, ?> budget)) {
+            return false;
+        }
+        return hasValue(budget.get("min")) || hasValue(budget.get("max"));
+    }
+
+    private Map<String, Object> sanitizeMemoryPatch(Map<String, Object> patch) {
+        if (patch == null || patch.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> filtered = new java.util.HashMap<>();
+        List<String> allowed = List.of("budgetMin", "budgetMax", "scene", "brandPreferences", "dislikes", "notes");
+        for (String key : allowed) {
+            Object value = patch.get(key);
+            if (value != null) {
+                filtered.put(key, value);
+            }
+        }
+        return filtered;
+    }
+
+    private Map<String, Object> extractBudgetPatchFromMessage(String message) {
+        BudgetRange range = extractBudgetFromText(message);
+        if (range == null) {
+            return Map.of();
+        }
+        Map<String, Object> patch = new java.util.HashMap<>();
+        if (range.min() != null) {
+            patch.put("budgetMin", range.min());
+        }
+        if (range.max() != null) {
+            patch.put("budgetMax", range.max());
         }
         return patch;
+    }
+
+    private BudgetRange extractBudgetFromProfile(Map<String, Object> profile) {
+        Integer min = asInteger(profile.get("budgetMin"));
+        Integer max = asInteger(profile.get("budgetMax"));
+        if (min == null && max == null) {
+            return null;
+        }
+        return new BudgetRange(min, max);
+    }
+
+    private BudgetRange extractBudgetFromTurns(List<SessionState.Turn> turns) {
+        for (int i = turns.size() - 1; i >= 0; i--) {
+            SessionState.Turn turn = turns.get(i);
+            if (!"user".equalsIgnoreCase(turn.getRole())) {
+                continue;
+            }
+            BudgetRange fromTurn = extractBudgetFromText(turn.getContent());
+            if (fromTurn != null) {
+                return fromTurn;
+            }
+        }
+        return null;
+    }
+
+    private BudgetRange pickEffectiveBudget(BudgetRange current, BudgetRange session, BudgetRange profile) {
+        if (current != null) {
+            return current;
+        }
+        if (session != null) {
+            return session;
+        }
+        return profile;
+    }
+
+    private BudgetRange extractBudgetFromText(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("(\\d{3,5})").matcher(text);
+        if (!matcher.find()) {
+            return null;
+        }
+        int amount = Integer.parseInt(matcher.group(1));
+        if (text.contains("以内") || text.contains("以下")) {
+            return new BudgetRange(null, amount);
+        }
+        if (text.contains("以上") || text.contains("起")) {
+            return new BudgetRange(amount, null);
+        }
+        if (text.contains("左右") || text.contains("大概") || text.contains("约")) {
+            int delta = amount >= 3000 ? 500 : 300;
+            return new BudgetRange(Math.max(0, amount - delta), amount + delta);
+        }
+        if (text.contains("预算")) {
+            return new BudgetRange(Math.max(0, amount - 300), amount + 300);
+        }
+        return null;
+    }
+
+    private Integer asInteger(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+        try {
+            return Integer.parseInt(value.toString());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private record AgentResult(String assistantReply, Map<String, Object> memoryPatch) {
+    }
+
+    private record BudgetRange(Integer min, Integer max) {
     }
 }

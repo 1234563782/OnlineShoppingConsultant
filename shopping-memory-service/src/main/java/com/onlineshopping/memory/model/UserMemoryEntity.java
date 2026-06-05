@@ -17,10 +17,10 @@ public class UserMemoryEntity {
     @Column(name = "user_id", nullable = false, updatable = false, length = 128)
     private String userId;
 
-    @Column(name = "profile_json", columnDefinition = "CLOB")
+    @Column(name = "profile_json", columnDefinition = "longtext")
     private String profileJson;
 
-    @Column(name = "summary_md", columnDefinition = "CLOB")
+    @Column(name = "summary_md", columnDefinition = "longtext")
     private String summaryMd;
 
     @Column(name = "created_at", nullable = false)

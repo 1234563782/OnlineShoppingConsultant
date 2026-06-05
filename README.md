@@ -6,7 +6,7 @@
 
 - `shopping-orchestrator`：总控 Agent，对外 `POST /api/v1/chat` + Web 聊天页
 - `shopping-consult-agent`：咨询导购 Agent（A2A Server）
-- `shopping-memory-service`：用户长期画像（H2，REST）
+- `shopping-memory-service`：用户长期画像（MySQL，REST）
 - `shopping-catalog-mcp-server`：商品搜索/详情工具（MCP）
 - `shopping-inventory-mcp-server`：库存工具（MCP）
 - `shopping-promotion-mcp-server`：优惠工具（MCP）
@@ -22,6 +22,7 @@
 
 - Redis：会话上下文（`6379`）
 - Nacos：A2A + MCP 注册发现（`8848`、`9848`）
+- MySQL：长期用户画像（默认库：`shopping_consultant`）
 
 使用根目录 compose 启动：
 
@@ -46,5 +47,20 @@ docker compose up -d
 - `NACOS_SERVER_ADDR`
 - `NACOS_USERNAME`
 - `NACOS_PASSWORD`
+- `SHOPPING_MEMORY_DB_URL`
+- `SHOPPING_MEMORY_DB_USERNAME`
+- `SHOPPING_MEMORY_DB_PASSWORD`
 
 > 不要把 `.env` 提交到 Git。
+
+## MySQL 初始化
+
+本地 MySQL 先建库：
+
+```sql
+CREATE DATABASE IF NOT EXISTS shopping_consultant
+  DEFAULT CHARACTER SET utf8mb4
+  DEFAULT COLLATE utf8mb4_unicode_ci;
+```
+
+`shopping-memory-service` 启动后会通过 JPA 自动维护 `user_memory` 表结构。

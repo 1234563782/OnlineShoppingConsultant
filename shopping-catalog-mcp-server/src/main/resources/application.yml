@@ -18,7 +18,7 @@ spring:
     mcp:
       server:
         name: catalog-mcp-server
-        version: 0.0.1
+        version: 0.0.2
         type: SYNC
     alibaba:
       mcp:

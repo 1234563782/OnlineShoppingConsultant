@@ -16,6 +16,12 @@ public class ProductEntity {
     @Column(name = "category", nullable = false, length = 64)
     private String category;
 
+    @Column(name = "category_id", length = 64)
+    private String categoryId;
+
+    @Column(name = "category_name", length = 64)
+    private String categoryName;
+
     @Column(name = "name", nullable = false, length = 128)
     private String name;
 
@@ -42,6 +48,22 @@ public class ProductEntity {
 
     public void setCategory(String category) {
         this.category = category;
+    }
+
+    public String getCategoryId() {
+        return categoryId;
+    }
+
+    public void setCategoryId(String categoryId) {
+        this.categoryId = categoryId;
+    }
+
+    public String getCategoryName() {
+        return categoryName;
+    }
+
+    public void setCategoryName(String categoryName) {
+        this.categoryName = categoryName;
     }
 
     public String getName() {

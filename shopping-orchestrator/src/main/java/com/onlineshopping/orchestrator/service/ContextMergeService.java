@@ -18,8 +18,10 @@ public class ContextMergeService {
     ) {
         Map<String, Object> current = currentSessionContext == null ? Map.of() : currentSessionContext;
         Map<String, Object> merged = new HashMap<>(isCategoryChanged(current, extractedPatch) ? Map.of() : current);
-        copyIfPresent(merged, extractedPatch, "intentType");
-        copyIfPresent(merged, extractedPatch, "category");
+        mergeIntentType(merged, extractedPatch);
+        copyIfPresent(merged, extractedPatch, "categoryRaw");
+        copyIfPresent(merged, extractedPatch, "categoryId");
+        copyIfPresent(merged, extractedPatch, "categoryName");
         copyIfPresent(merged, extractedPatch, "scene");
         copyIfPresent(merged, extractedPatch, "notes");
         copyIfPresent(merged, extractedPatch, "userUncertain");
@@ -120,9 +122,26 @@ public class ContextMergeService {
         }
     }
 
+    private void mergeIntentType(Map<String, Object> target, Map<String, Object> source) {
+        Object value = source == null ? null : source.get("intentType");
+        if (!hasValue(value)) {
+            return;
+        }
+        String incoming = value.toString();
+        boolean hasShoppingContext = hasCategoryValue(target)
+                || hasBudgetValue(target.get("budget"))
+                || hasValue(target.get("scene"));
+        if (hasShoppingContext
+                && ("small_talk".equalsIgnoreCase(incoming) || "non_shopping".equalsIgnoreCase(incoming))) {
+            target.put("intentType", "shopping");
+            return;
+        }
+        target.put("intentType", incoming);
+    }
+
     private boolean isCategoryChanged(Map<String, Object> current, Map<String, Object> extractedPatch) {
-        Object oldCategory = current.get("category");
-        Object newCategory = extractedPatch == null ? null : extractedPatch.get("category");
+        Object oldCategory = categoryValue(current);
+        Object newCategory = categoryValue(extractedPatch);
         return hasValue(oldCategory)
                 && hasValue(newCategory)
                 && !oldCategory.toString().equalsIgnoreCase(newCategory.toString());
@@ -182,6 +201,26 @@ public class ContextMergeService {
         return hasValue(map.get("min")) || hasValue(map.get("max"));
     }
 
+    private boolean hasCategoryValue(Map<String, Object> context) {
+        return hasValue(categoryValue(context));
+    }
+
+    private Object categoryValue(Map<String, Object> context) {
+        if (context == null) {
+            return null;
+        }
+        if (hasValue(context.get("categoryId"))) {
+            return context.get("categoryId");
+        }
+        if (hasValue(context.get("categoryName"))) {
+            return context.get("categoryName");
+        }
+        if (hasValue(context.get("categoryRaw"))) {
+            return context.get("categoryRaw");
+        }
+        return context.get("category");
+    }
+
     private boolean hasValue(Object value) {
         if (value == null) {
             return false;
@@ -214,7 +253,7 @@ public class ContextMergeService {
 
     private List<String> missingFields(Map<String, Object> effective) {
         List<String> missing = new ArrayList<>();
-        if (!hasValue(effective.get("category"))) {
+        if (!hasCategoryValue(effective)) {
             missing.add("category");
         }
         if (!hasBudgetValue(effective.get("budget"))) {

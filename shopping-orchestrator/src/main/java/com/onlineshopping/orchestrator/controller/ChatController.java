@@ -64,14 +64,17 @@ public class ChatController {
 
         SessionState sessionState = sessionStoreService.getSession(sessionId, request.getUserId());
         Map<String, Object> profile = memoryClientService.getProfile(request.getUserId());
-        Map<String, Object> extractedPatch = contextExtractionService.extractPatch(
-                request.getMessage(),
-                sessionState.getSessionContext()
-        );
+        Map<String, Object> currentSessionContext = sessionState.getSessionContext();
+        String pendingField = pendingField(currentSessionContext);
+        Map<String, Object> extractedPatch = pendingField == null
+                ? contextExtractionService.extractPatch(request.getMessage(), currentSessionContext)
+                : contextExtractionService.extractPendingFieldPatch(pendingField, request.getMessage(), currentSessionContext);
+        normalizeCategoryRawPatch(request.getMessage(), sessionState.getSessionContext(), extractedPatch);
         Map<String, Object> sessionContext = contextMergeService.mergeSessionPatch(
                 sessionState.getSessionContext(),
                 extractedPatch
         );
+        applyPendingFieldResult(sessionContext, pendingField, extractedPatch);
         boolean allowLongTermFallback = shouldAllowLongTermFallback(sessionContext);
         Map<String, Object> effectiveContext = contextMergeService.buildEffectiveContext(
                 sessionContext,
@@ -98,6 +101,7 @@ public class ChatController {
         String clarification = buildClarificationIfNeeded(effectiveContext);
         if (clarification != null) {
             markAskedFields(sessionContext, effectiveContext);
+            markPendingField(sessionContext, effectiveContext, clarification);
             sessionState.setSessionContext(sessionContext);
             sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), clarification);
             Map<String, Object> longTermMemoryPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
@@ -136,9 +140,6 @@ public class ChatController {
         if (isInvalidReply(reply)) {
             reply = buildFallbackShoppingReply(effectiveContext);
         }
-        if (hasBudgetValue(effectiveContext.get("budget")) && isAskingBudget(reply)) {
-            reply = "已记录你给出的预算信息，我继续基于预算和偏好给你推荐具体款式。";
-        }
 
         sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), reply);
         Map<String, Object> memoryPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
@@ -174,9 +175,12 @@ public class ChatController {
                 }
                 规则：
                 1. effectiveContext 是主Agent已经整理好的本次咨询上下文，以它为准执行。
-                2. 已有字段不要重复追问；预算已知时禁止再问“预算多少”。
-                3. 推荐时必须给出具体款式（名称+大致价格+理由）。
-                4. memoryPatch 仅包含新增或更新字段，无则给空对象。
+                2. 你是推荐执行者，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须调用工具并给出具体推荐。
+                3. 如果预算缺失或用户说“先看看”，按不同价位/常见档位推荐；如果场景缺失，按通用需求假设推荐并说明假设。
+                4. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
+                5. 推荐时必须给出具体款式（名称+大致价格+理由）。
+                6. 如果工具返回当前品类或价格段没有精确命中，要如实说明，并推荐工具给出的其他品类或其他价格段候选。
+                7. memoryPatch 仅包含新增或更新字段，无则给空对象。
                                 
                 userId: %s
                 userMessage: %s
@@ -244,10 +248,6 @@ public class ChatController {
             }
         }
         return false;
-    }
-
-    private boolean isAskingBudget(String reply) {
-        return reply != null && (reply.contains("预算多少") || reply.contains("请问预算") || reply.contains("预算是"));
     }
 
     private boolean isSmallTalkOrNonShopping(String message) {
@@ -330,6 +330,44 @@ public class ChatController {
         }
     }
 
+    private void normalizeCategoryRawPatch(
+            String userMessage,
+            Map<String, Object> currentSessionContext,
+            Map<String, Object> extractedPatch
+    ) {
+        if (extractedPatch == null) {
+            return;
+        }
+        if (!hasValue(extractedPatch.get("categoryRaw")) && hasValue(extractedPatch.get("category"))) {
+            extractedPatch.put("categoryRaw", extractedPatch.get("category"));
+        }
+        extractedPatch.remove("category");
+        extractedPatch.remove("categoryId");
+        extractedPatch.remove("categoryName");
+
+        Object extractedCategoryRaw = extractedPatch.get("categoryRaw");
+        if (!hasValue(extractedCategoryRaw)) {
+            return;
+        }
+        String raw = extractedCategoryRaw.toString().trim();
+        if (containsIgnoreCase(userMessage, raw)) {
+            extractedPatch.put("intentType", "shopping");
+            return;
+        }
+        Object currentCategoryRaw = categoryLabel(currentSessionContext);
+        if (hasValue(currentCategoryRaw)
+                && !currentCategoryRaw.toString().equalsIgnoreCase(raw)) {
+            extractedPatch.remove("categoryRaw");
+        }
+    }
+
+    private boolean containsIgnoreCase(String text, String needle) {
+        return text != null
+                && needle != null
+                && !needle.isBlank()
+                && text.toLowerCase(java.util.Locale.ROOT).contains(needle.toLowerCase(java.util.Locale.ROOT));
+    }
+
     private boolean isInvalidReply(String reply) {
         if (reply == null) {
             return true;
@@ -347,15 +385,16 @@ public class ChatController {
         boolean userUncertain = Boolean.TRUE.equals(effectiveContext.get("userUncertain"));
         List<String> askedFields = normalizeStringList(effectiveContext.get("askedFields"));
         if (missingFields.contains("category")) {
-            return "你想买什么品类？比如手机、耳机、电脑、平板或手表。";
+            return "你想买什么品类或商品？可以直接说商品名、预算、使用场景和偏好。";
         }
+        Object category = categoryLabel(effectiveContext);
         if (missingFields.contains("budget") && !userUncertain && !askedFields.contains("budget")) {
             return "收到，你想买%s。请补充一下大概预算；如果暂时不确定，也可以说“先看看”，我会按不同价位给你推荐。"
-                    .formatted(effectiveContext.get("category"));
+                    .formatted(category);
         }
         if (missingFields.contains("scene") && !userUncertain && !askedFields.contains("scene")) {
             return "这个%s主要用在什么场景？比如通勤、办公、学习、运动或游戏。"
-                    .formatted(effectiveContext.get("category"));
+                    .formatted(category);
         }
         return null;
     }
@@ -364,6 +403,33 @@ public class ChatController {
         boolean userUncertain = Boolean.TRUE.equals(sessionContext.get("userUncertain"));
         List<String> askedFields = normalizeStringList(sessionContext.get("askedFields"));
         return userUncertain || askedFields.contains("budget") || askedFields.contains("scene");
+    }
+
+    private String pendingField(Map<String, Object> sessionContext) {
+        if (sessionContext == null || !hasValue(sessionContext.get("pendingField"))) {
+            return null;
+        }
+        return sessionContext.get("pendingField").toString();
+    }
+
+    private void applyPendingFieldResult(
+            Map<String, Object> sessionContext,
+            String pendingField,
+            Map<String, Object> extractedPatch
+    ) {
+        if (pendingField == null || sessionContext == null) {
+            return;
+        }
+        boolean answered = Boolean.TRUE.equals(extractedPatch.get("answeredPendingField"));
+        boolean userUncertain = Boolean.TRUE.equals(extractedPatch.get("userUncertain"));
+        boolean categoryChanged = hasValue(extractedPatch.get("categoryRaw"))
+                && !"category".equalsIgnoreCase(pendingField);
+        if (answered || userUncertain || categoryChanged || Boolean.FALSE.equals(extractedPatch.get("shouldKeepPending"))) {
+            sessionContext.remove("pendingField");
+            sessionContext.remove("pendingQuestion");
+            return;
+        }
+        sessionContext.put("pendingField", pendingField);
     }
 
     private void markAskedFields(Map<String, Object> sessionContext, Map<String, Object> effectiveContext) {
@@ -375,6 +441,37 @@ public class ChatController {
             }
         }
         sessionContext.put("askedFields", new ArrayList<>(askedFields));
+    }
+
+    private void markPendingField(
+            Map<String, Object> sessionContext,
+            Map<String, Object> effectiveContext,
+            String question
+    ) {
+        String field = nextClarificationField(effectiveContext);
+        if (field == null) {
+            sessionContext.remove("pendingField");
+            sessionContext.remove("pendingQuestion");
+            return;
+        }
+        sessionContext.put("pendingField", field);
+        sessionContext.put("pendingQuestion", question);
+    }
+
+    private String nextClarificationField(Map<String, Object> effectiveContext) {
+        List<?> missingFields = effectiveContext.get("missingFields") instanceof List<?> list ? list : List.of();
+        boolean userUncertain = Boolean.TRUE.equals(effectiveContext.get("userUncertain"));
+        List<String> askedFields = normalizeStringList(effectiveContext.get("askedFields"));
+        if (missingFields.contains("category")) {
+            return "category";
+        }
+        if (missingFields.contains("budget") && !userUncertain && !askedFields.contains("budget")) {
+            return "budget";
+        }
+        if (missingFields.contains("scene") && !userUncertain && !askedFields.contains("scene")) {
+            return "scene";
+        }
+        return null;
     }
 
     private List<String> normalizeStringList(Object value) {
@@ -391,7 +488,7 @@ public class ChatController {
     }
 
     private String buildFallbackShoppingReply(Map<String, Object> effectiveContext) {
-        Object category = effectiveContext.get("category");
+        Object category = categoryLabel(effectiveContext);
         Object budget = effectiveContext.get("budget");
         if (hasValue(category)) {
             if (hasBudgetValue(budget)) {
@@ -400,6 +497,19 @@ public class ChatController {
             return "收到，你想买%s。请补充预算、品牌偏好或必须功能，我会给你推荐具体款式。".formatted(category);
         }
         return "我已收到你的需求。你可以告诉我想买的品类、预算和使用场景，我会给你推荐具体型号。";
+    }
+
+    private Object categoryLabel(Map<String, Object> context) {
+        if (context == null) {
+            return null;
+        }
+        if (hasValue(context.get("categoryName"))) {
+            return context.get("categoryName");
+        }
+        if (hasValue(context.get("categoryRaw"))) {
+            return context.get("categoryRaw");
+        }
+        return context.get("category");
     }
 
     private boolean hasValue(Object value) {

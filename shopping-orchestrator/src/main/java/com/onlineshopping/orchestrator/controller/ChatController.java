@@ -204,40 +204,6 @@ public class ChatController {
         return builder.toString();
     }
 
-    private Map<String, Object> buildConsultationSummary(
-            Map<String, Object> memoryProfile,
-            List<SessionState.Turn> turns,
-            String currentMessage
-    ) {
-        Map<String, Object> summary = new java.util.HashMap<>();
-        BudgetRange currentBudget = extractBudgetFromText(currentMessage);
-        BudgetRange sessionBudget = extractBudgetFromTurns(turns);
-        BudgetRange profileBudget = extractBudgetFromProfile(memoryProfile);
-        BudgetRange effectiveBudget = pickEffectiveBudget(currentBudget, sessionBudget, profileBudget);
-
-        summary.put("memoryProfile", memoryProfile);
-        summary.put("currentMessage", currentMessage);
-        summary.put("budgetKnown", effectiveBudget != null);
-        summary.put("budgetSource",
-                currentBudget != null ? "current_message"
-                        : sessionBudget != null ? "session_history" : profileBudget != null ? "long_term_profile" : "unknown");
-        if (effectiveBudget != null) {
-            summary.put("effectiveBudgetMin", effectiveBudget.min());
-            summary.put("effectiveBudgetMax", effectiveBudget.max());
-        }
-        summary.put("sceneKnown", memoryProfile.get("scene") != null || containsAny(currentMessage, "通勤", "运动", "办公", "游戏", "学习"));
-        summary.put("recentUserIntents", extractRecentUserIntents(turns));
-        return summary;
-    }
-
-    private boolean hasBudget(Map<String, Object> memoryProfile) {
-        return memoryProfile.get("budgetMin") != null || memoryProfile.get("budgetMax") != null;
-    }
-
-    private boolean containsBudgetSignal(String text) {
-        return text != null && (containsAny(text, "预算", "左右", "以内", "元", "块") || text.matches(".*\\d{3,}.*"));
-    }
-
     private boolean containsAny(String text, String... words) {
         if (text == null) {
             return false;
@@ -248,20 +214,6 @@ public class ChatController {
             }
         }
         return false;
-    }
-
-    private boolean isSmallTalkOrNonShopping(String message) {
-        if (message == null || message.isBlank()) {
-            return true;
-        }
-        String text = message.trim();
-        if (containsAny(text, "你好", "哈喽", "在吗", "谢谢", "辛苦了", "再见", "拜拜", "早上好", "晚上好")) {
-            return true;
-        }
-        boolean shoppingSignal = containsAny(text,
-                "买", "推荐", "预算", "耳机", "手机", "平板", "电脑", "手表",
-                "库存", "优惠", "对比", "品牌", "降噪", "防水", "续航", "参数");
-        return !shoppingSignal && text.length() <= 20;
     }
 
     private String buildSmallTalkReply(String message) {
@@ -276,17 +228,6 @@ public class ChatController {
             return "好的，随时来找我，我可以继续帮你选购。";
         }
         return "你好，我在。你想买什么品类？可以直接说预算、使用场景和偏好。";
-    }
-
-    private List<String> extractRecentUserIntents(List<SessionState.Turn> turns) {
-        List<String> intents = new ArrayList<>();
-        for (SessionState.Turn turn : turns) {
-            if ("user".equalsIgnoreCase(turn.getRole()) && turn.getContent() != null && !turn.getContent().isBlank()) {
-                intents.add(turn.getContent());
-            }
-        }
-        int size = intents.size();
-        return size <= 2 ? intents : intents.subList(size - 2, size);
     }
 
     private AgentResult parseAgentResult(String rawReply) {
@@ -540,111 +481,6 @@ public class ChatController {
         return hasValue(budget.get("min")) || hasValue(budget.get("max"));
     }
 
-    private Map<String, Object> sanitizeMemoryPatch(Map<String, Object> patch) {
-        if (patch == null || patch.isEmpty()) {
-            return Map.of();
-        }
-        Map<String, Object> filtered = new java.util.HashMap<>();
-        List<String> allowed = List.of("budgetMin", "budgetMax", "scene", "brandPreferences", "dislikes", "notes");
-        for (String key : allowed) {
-            Object value = patch.get(key);
-            if (value != null) {
-                filtered.put(key, value);
-            }
-        }
-        return filtered;
-    }
-
-    private Map<String, Object> extractBudgetPatchFromMessage(String message) {
-        BudgetRange range = extractBudgetFromText(message);
-        if (range == null) {
-            return Map.of();
-        }
-        Map<String, Object> patch = new java.util.HashMap<>();
-        if (range.min() != null) {
-            patch.put("budgetMin", range.min());
-        }
-        if (range.max() != null) {
-            patch.put("budgetMax", range.max());
-        }
-        return patch;
-    }
-
-    private BudgetRange extractBudgetFromProfile(Map<String, Object> profile) {
-        Integer min = asInteger(profile.get("budgetMin"));
-        Integer max = asInteger(profile.get("budgetMax"));
-        if (min == null && max == null) {
-            return null;
-        }
-        return new BudgetRange(min, max);
-    }
-
-    private BudgetRange extractBudgetFromTurns(List<SessionState.Turn> turns) {
-        for (int i = turns.size() - 1; i >= 0; i--) {
-            SessionState.Turn turn = turns.get(i);
-            if (!"user".equalsIgnoreCase(turn.getRole())) {
-                continue;
-            }
-            BudgetRange fromTurn = extractBudgetFromText(turn.getContent());
-            if (fromTurn != null) {
-                return fromTurn;
-            }
-        }
-        return null;
-    }
-
-    private BudgetRange pickEffectiveBudget(BudgetRange current, BudgetRange session, BudgetRange profile) {
-        if (current != null) {
-            return current;
-        }
-        if (session != null) {
-            return session;
-        }
-        return profile;
-    }
-
-    private BudgetRange extractBudgetFromText(String text) {
-        if (text == null || text.isBlank()) {
-            return null;
-        }
-        Matcher matcher = Pattern.compile("(\\d{3,5})").matcher(text);
-        if (!matcher.find()) {
-            return null;
-        }
-        int amount = Integer.parseInt(matcher.group(1));
-        if (text.contains("以内") || text.contains("以下")) {
-            return new BudgetRange(null, amount);
-        }
-        if (text.contains("以上") || text.contains("起")) {
-            return new BudgetRange(amount, null);
-        }
-        if (text.contains("左右") || text.contains("大概") || text.contains("约")) {
-            int delta = amount >= 3000 ? 500 : 300;
-            return new BudgetRange(Math.max(0, amount - delta), amount + delta);
-        }
-        if (text.contains("预算")) {
-            return new BudgetRange(Math.max(0, amount - 300), amount + 300);
-        }
-        return null;
-    }
-
-    private Integer asInteger(Object value) {
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Number n) {
-            return n.intValue();
-        }
-        try {
-            return Integer.parseInt(value.toString());
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
     private record AgentResult(String assistantReply, Map<String, Object> memoryPatch) {
-    }
-
-    private record BudgetRange(Integer min, Integer max) {
     }
 }

@@ -13,6 +13,7 @@ import com.onlineshopping.orchestrator.dto.SessionState;
 import com.onlineshopping.orchestrator.service.ContextExtractionService;
 import com.onlineshopping.orchestrator.service.ContextMergeService;
 import com.onlineshopping.orchestrator.service.MemoryClientService;
+import com.onlineshopping.orchestrator.service.MemoryMergeService;
 import com.onlineshopping.orchestrator.service.SessionStoreService;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -23,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -38,6 +40,7 @@ public class ChatController {
     private final MemoryClientService memoryClientService;
     private final ContextExtractionService contextExtractionService;
     private final ContextMergeService contextMergeService;
+    private final MemoryMergeService memoryMergeService;
     private final ObjectMapper objectMapper;
 
     public ChatController(
@@ -46,6 +49,7 @@ public class ChatController {
             MemoryClientService memoryClientService,
             ContextExtractionService contextExtractionService,
             ContextMergeService contextMergeService,
+            MemoryMergeService memoryMergeService,
             ObjectMapper objectMapper
     ) {
         this.supervisorAgent = supervisorAgent;
@@ -53,6 +57,7 @@ public class ChatController {
         this.memoryClientService = memoryClientService;
         this.contextExtractionService = contextExtractionService;
         this.contextMergeService = contextMergeService;
+        this.memoryMergeService = memoryMergeService;
         this.objectMapper = objectMapper;
     }
 
@@ -104,16 +109,23 @@ public class ChatController {
             markPendingField(sessionContext, effectiveContext, clarification);
             sessionState.setSessionContext(sessionContext);
             sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), clarification);
-            Map<String, Object> longTermMemoryPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
-            memoryClientService.mergePatch(request.getUserId(), longTermMemoryPatch);
+            LongTermMemoryWriteResult memoryWrite = persistLongTermMemory(
+                    request.getUserId(),
+                    extractedPatch,
+                    Map.of(),
+                    effectiveContext,
+                    request.getMessage()
+            );
             ChatResponse response = new ChatResponse();
             response.setSessionId(sessionId);
             response.setReply(clarification);
-            response.setDebug(Map.of(
-                    "toolMode", "orchestrator_clarify",
-                    "sessionContext", sessionContext,
-                    "effectiveContext", effectiveContext,
-                    "longTermMemoryPatch", longTermMemoryPatch
+            response.setDebug(buildMemoryDebugMap(
+                    "orchestrator_clarify",
+                    Map.of(
+                            "sessionContext", sessionContext,
+                            "effectiveContext", effectiveContext
+                    ),
+                    memoryWrite
             ));
             return response;
         }
@@ -142,20 +154,68 @@ public class ChatController {
         }
 
         sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), reply);
-        Map<String, Object> memoryPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
-        memoryClientService.mergePatch(request.getUserId(), memoryPatch);
+        LongTermMemoryWriteResult memoryWrite = persistLongTermMemory(
+                request.getUserId(),
+                extractedPatch,
+                agentResult.memoryPatch(),
+                effectiveContext,
+                request.getMessage()
+        );
 
         ChatResponse response = new ChatResponse();
         response.setSessionId(sessionId);
         response.setReply(reply);
-        response.setDebug(Map.of(
-                "toolMode", "a2a+nacos",
-                "memoryProfile", profile,
-                "sessionContext", sessionContext,
-                "effectiveContext", effectiveContext,
-                "longTermMemoryPatch", memoryPatch
+        response.setDebug(buildMemoryDebugMap(
+                "a2a+nacos",
+                Map.of(
+                        "memoryProfile", profile,
+                        "sessionContext", sessionContext,
+                        "effectiveContext", effectiveContext
+                ),
+                memoryWrite
         ));
         return response;
+    }
+
+    private LongTermMemoryWriteResult persistLongTermMemory(
+            String userId,
+            Map<String, Object> extractedPatch,
+            Map<String, Object> agentMemoryPatch,
+            Map<String, Object> effectiveContext,
+            String userMessage
+    ) {
+        Map<String, Object> extractionPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
+        Map<String, Object> agentPatch = memoryMergeService.sanitizeAgentPatch(
+                agentMemoryPatch,
+                effectiveContext,
+                extractionPatch,
+                extractedPatch,
+                userMessage
+        );
+        Map<String, Object> mergedPatch = memoryMergeService.mergeForProfile(extractionPatch, agentPatch);
+        memoryClientService.mergePatch(userId, mergedPatch);
+        return new LongTermMemoryWriteResult(extractionPatch, agentPatch, mergedPatch);
+    }
+
+    private Map<String, Object> buildMemoryDebugMap(
+            String toolMode,
+            Map<String, Object> extra,
+            LongTermMemoryWriteResult memoryWrite
+    ) {
+        Map<String, Object> debug = new HashMap<>(extra);
+        debug.put("toolMode", toolMode);
+        debug.put("memoryPatchFromExtraction", memoryWrite.extractionPatch());
+        debug.put("memoryPatchFromAgent", memoryWrite.agentPatch());
+        debug.put("memoryPatchMerged", memoryWrite.mergedPatch());
+        debug.put("profileWritten", memoryWrite.mergedPatch() != null && !memoryWrite.mergedPatch().isEmpty());
+        return debug;
+    }
+
+    private record LongTermMemoryWriteResult(
+            Map<String, Object> extractionPatch,
+            Map<String, Object> agentPatch,
+            Map<String, Object> mergedPatch
+    ) {
     }
 
     private String buildUserInput(String message, String userId, Map<String, Object> effectiveContext) {
@@ -165,9 +225,6 @@ public class ChatController {
                 {
                   "assistantReply":"给用户看的自然语言回复",
                   "memoryPatch":{
-                    "budgetMin":number|null,
-                    "budgetMax":number|null,
-                    "scene":"string|null",
                     "brandPreferences":["string"],
                     "dislikes":["string"],
                     "notes":"string|null"
@@ -180,7 +237,8 @@ public class ChatController {
                 4. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
                 5. 推荐时必须给出具体款式（名称+大致价格+理由）。
                 6. 如果工具返回当前品类或价格段没有精确命中，要如实说明，并推荐工具给出的其他品类或其他价格段候选。
-                7. memoryPatch 仅包含新增或更新字段，无则给空对象。
+                7. memoryPatch 仅包含用户在本轮或 effectiveContext 中已明确表达的稳定长期偏好，允许字段只有 brandPreferences、dislikes、notes。
+                8. 禁止推测用户未说过的品牌、排斥项或长期备注；不要填写 budget、scene；无新增长期偏好时返回空对象 {}。
                                 
                 userId: %s
                 userMessage: %s

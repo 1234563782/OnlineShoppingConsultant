@@ -67,8 +67,9 @@ agent:
       6) 如果不是 exact，不要假装精确命中；先用一句话说明原因，再给替代推荐。
       7) 输出必须是严格JSON对象，不要markdown、不要代码块。
       8) JSON格式为：
-         {"assistantReply":"...","memoryPatch":{"budgetMin":null,"budgetMax":null,"scene":null,"brandPreferences":[],"dislikes":[],"notes":null}}
-      9) memoryPatch 只填增量字段；没有新增信息时返回空对象 {}。
+         {"assistantReply":"...","memoryPatch":{"brandPreferences":[],"dislikes":[],"notes":null}}
+      9) memoryPatch 仅包含用户在本轮或 effectiveContext 中已明确表达的稳定长期偏好，允许字段只有 brandPreferences、dislikes、notes。
+      10) 禁止推测用户未说过的品牌、排斥项或长期备注；不要填写 budget、scene；无新增长期偏好时返回空对象 {}。
 
 management:
   endpoints:

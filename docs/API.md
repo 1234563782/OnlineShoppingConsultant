@@ -4,6 +4,8 @@
 
 ### `POST /api/v1/chat`
 
+SSE 流式响应（`Content-Type: text/event-stream`）。
+
 Request:
 
 ```json
@@ -14,17 +16,16 @@ Request:
 }
 ```
 
-Response:
+事件类型（每条 `data` 为 JSON）：
 
-```json
-{
-  "sessionId": "generated-or-input-session-id",
-  "reply": "推荐结果...",
-  "debug": {
-    "toolMode": "a2a+nacos"
-  }
-}
-```
+| type | 说明 |
+|------|------|
+| `session` | `{ "type":"session", "sessionId":"..." }` |
+| `delta` | 纯文本增量 `{ "type":"delta", "content":"..." }` |
+| `done` | 结束 `{ "type":"done", "sessionId":"...", "reply":"...", "debug":{...} }` |
+| `error` | 错误 `{ "type":"error", "message":"..." }` |
+
+`delta.content` 与 `done.reply` 均为给用户看的自然语言，不包含 Agent 原始 JSON。
 
 ## Memory Service
 

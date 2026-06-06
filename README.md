@@ -4,7 +4,7 @@
 
 ## 当前架构（初版）
 
-- `shopping-orchestrator`：总控 Agent，对外 `POST /api/v1/chat` + Web 聊天页
+- `shopping-orchestrator`：总控 Agent，对外 `POST /api/v1/chat`（SSE 流式）+ Web 聊天页
 - `shopping-consult-agent`：咨询导购 Agent（A2A Server）
 - `shopping-memory-service`：用户长期画像（MySQL，REST）
 - `shopping-catalog-mcp-server`：商品搜索/详情工具（MCP）

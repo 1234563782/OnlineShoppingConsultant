@@ -7,16 +7,21 @@ import com.alibaba.cloud.ai.graph.agent.flow.agent.LlmRoutingAgent;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
 import com.onlineshopping.orchestrator.dto.ChatRequest;
-import com.onlineshopping.orchestrator.dto.ChatResponse;
 import com.onlineshopping.orchestrator.dto.SessionState;
 import com.onlineshopping.orchestrator.service.ContextExtractionService;
 import com.onlineshopping.orchestrator.service.ContextMergeService;
 import com.onlineshopping.orchestrator.service.MemoryClientService;
 import com.onlineshopping.orchestrator.service.MemoryMergeService;
+import com.onlineshopping.orchestrator.service.ProfileReconcileService;
 import com.onlineshopping.orchestrator.service.SessionStoreService;
+import com.onlineshopping.orchestrator.support.AssistantReplyStreamFilter;
+import com.onlineshopping.orchestrator.support.ProfileListNormalizer;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -41,6 +46,7 @@ public class ChatController {
     private final ContextExtractionService contextExtractionService;
     private final ContextMergeService contextMergeService;
     private final MemoryMergeService memoryMergeService;
+    private final ProfileReconcileService profileReconcileService;
     private final ObjectMapper objectMapper;
 
     public ChatController(
@@ -50,6 +56,7 @@ public class ChatController {
             ContextExtractionService contextExtractionService,
             ContextMergeService contextMergeService,
             MemoryMergeService memoryMergeService,
+            ProfileReconcileService profileReconcileService,
             ObjectMapper objectMapper
     ) {
         this.supervisorAgent = supervisorAgent;
@@ -58,123 +65,246 @@ public class ChatController {
         this.contextExtractionService = contextExtractionService;
         this.contextMergeService = contextMergeService;
         this.memoryMergeService = memoryMergeService;
+        this.profileReconcileService = profileReconcileService;
         this.objectMapper = objectMapper;
     }
 
-    @PostMapping("/chat")
-    public ChatResponse chat(@Valid @RequestBody ChatRequest request) throws Exception {
-        String sessionId = (request.getSessionId() == null || request.getSessionId().isBlank())
-                ? UUID.randomUUID().toString()
-                : request.getSessionId();
+    @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> chat(@Valid @RequestBody ChatRequest request) {
+        return Flux.defer(() -> {
+            try {
+                String sessionId = resolveSessionId(request.getSessionId());
+                ChatPreparedContext prepared = prepareContext(request, sessionId);
 
+                if (isSmallTalkOrNonShopping(prepared.intentType())) {
+                    String reply = buildSmallTalkReply(request.getMessage());
+                    sessionStoreService.appendTurns(sessionId, prepared.sessionState(), request.getMessage(), reply);
+                    return streamStaticReply(
+                            sessionId,
+                            reply,
+                            Map.of(
+                                    "toolMode", "orchestrator_direct_reply",
+                                    "reason", prepared.intentType(),
+                                    "sessionContext", prepared.sessionContext()
+                            )
+                    );
+                }
+
+                String clarification = buildClarificationIfNeeded(prepared.effectiveContext());
+                if (clarification != null) {
+                    markAskedFields(prepared.sessionContext(), prepared.effectiveContext());
+                    markPendingField(prepared.sessionContext(), prepared.effectiveContext(), clarification);
+                    prepared.sessionState().setSessionContext(prepared.sessionContext());
+                    sessionStoreService.appendTurns(sessionId, prepared.sessionState(), request.getMessage(), clarification);
+                    LongTermMemoryWriteResult memoryWrite = persistLongTermMemory(
+                            request.getUserId(),
+                            prepared.extractedPatch(),
+                            Map.of(),
+                            prepared.effectiveContext(),
+                            prepared.profile(),
+                            request.getMessage()
+                    );
+                    Map<String, Object> debug = buildMemoryDebugMap(
+                            "orchestrator_clarify",
+                            Map.of(
+                                    "sessionContext", prepared.sessionContext(),
+                                    "effectiveContext", prepared.effectiveContext()
+                            ),
+                            memoryWrite
+                    );
+                    return streamStaticReply(sessionId, clarification, debug);
+                }
+
+                return streamAgentReply(prepared, request);
+            } catch (Exception e) {
+                return Flux.just(errorEvent(e.getMessage() == null ? "stream failed" : e.getMessage()));
+            }
+        });
+    }
+
+    private Flux<ServerSentEvent<String>> streamStaticReply(
+            String sessionId,
+            String reply,
+            Map<String, Object> debug
+    ) {
+        return Flux.concat(
+                Flux.just(sessionEvent(sessionId)),
+                Flux.just(deltaEvent(reply)),
+                Flux.just(doneEvent(sessionId, reply, debug))
+        );
+    }
+
+    private Flux<ServerSentEvent<String>> streamAgentReply(ChatPreparedContext prepared, ChatRequest request) throws Exception {
+        String userInput = buildUserInput(request.getMessage(), request.getUserId(), prepared.effectiveContext());
+        RunnableConfig runnableConfig = RunnableConfig.builder()
+                .threadId(prepared.sessionId())
+                .addMetadata("user_id", request.getUserId())
+                .build();
+        Map<String, Object> input = Map.of(
+                "input", userInput,
+                "chat_id", prepared.sessionId(),
+                "user_id", request.getUserId()
+        );
+
+        CompiledGraph compiledGraph = supervisorAgent.getAndCompileGraph();
+        AssistantReplyStreamFilter replyFilter = new AssistantReplyStreamFilter();
+
+        Flux<ServerSentEvent<String>> tokenFlux = compiledGraph.fluxStream(input, runnableConfig)
+                .concatMap(output -> {
+                    if (!"a2aNode".equals(output.node()) || !(output instanceof StreamingOutput streamingOutput)) {
+                        return Flux.empty();
+                    }
+                    String chunk = streamingOutput.chunk();
+                    if (chunk == null || chunk.isBlank() || "Agent State: submitted".equals(chunk)) {
+                        return Flux.empty();
+                    }
+                    String delta = replyFilter.append(chunk);
+                    if (delta.isEmpty() || looksLikeJsonEnvelope(delta)) {
+                        return Flux.empty();
+                    }
+                    return Flux.just(deltaEvent(delta));
+                });
+
+        return Flux.concat(
+                Flux.just(sessionEvent(prepared.sessionId())),
+                tokenFlux,
+                Flux.defer(() -> finalizeAgentStream(prepared, request, replyFilter))
+        ).onErrorResume(error -> Flux.just(errorEvent(
+                error.getMessage() == null ? "stream failed" : error.getMessage()
+        )));
+    }
+
+    private Flux<ServerSentEvent<String>> finalizeAgentStream(
+            ChatPreparedContext prepared,
+            ChatRequest request,
+            AssistantReplyStreamFilter replyFilter
+    ) {
+        String rawReply = replyFilter.rawContent();
+        AgentResult agentResult = resolveAgentResult(rawReply, prepared.effectiveContext());
+        String reply = agentResult.assistantReply();
+
+        sessionStoreService.appendTurns(prepared.sessionId(), prepared.sessionState(), request.getMessage(), reply);
+        LongTermMemoryWriteResult memoryWrite = persistLongTermMemory(
+                request.getUserId(),
+                prepared.extractedPatch(),
+                agentResult.memoryPatch(),
+                prepared.effectiveContext(),
+                prepared.profile(),
+                request.getMessage()
+        );
+        Map<String, Object> debug = buildMemoryDebugMap(
+                "a2a+nacos",
+                Map.of(
+                        "memoryProfile", prepared.profile(),
+                        "sessionContext", prepared.sessionContext(),
+                        "effectiveContext", prepared.effectiveContext()
+                ),
+                memoryWrite
+        );
+        return Flux.just(doneEvent(prepared.sessionId(), reply, debug));
+    }
+
+    private AgentResult resolveAgentResult(String rawReply, Map<String, Object> effectiveContext) {
+        AgentResult parsed = parseAgentResult(rawReply);
+        String reply = parsed.assistantReply();
+        if (!isInvalidReply(reply) && !looksLikeJsonEnvelope(reply)) {
+            return parsed;
+        }
+        String extracted = AssistantReplyStreamFilter.decodeFull(rawReply);
+        if (hasValue(extracted)) {
+            return new AgentResult(extracted, parsed.memoryPatch());
+        }
+        if (!isInvalidReply(reply) && !looksLikeJsonEnvelope(reply)) {
+            return parsed;
+        }
+        return new AgentResult(buildFallbackShoppingReply(effectiveContext), parsed.memoryPatch());
+    }
+
+    private boolean looksLikeJsonEnvelope(String text) {
+        if (text == null) {
+            return false;
+        }
+        String trimmed = text.trim();
+        return trimmed.startsWith("{")
+                && (trimmed.contains("\"assistantReply\"")
+                || trimmed.contains("\"memoryPatch\"")
+                || trimmed.contains("\"reply\""));
+    }
+
+    private ChatPreparedContext prepareContext(ChatRequest request, String sessionId) {
         SessionState sessionState = sessionStoreService.getSession(sessionId, request.getUserId());
         Map<String, Object> profile = memoryClientService.getProfile(request.getUserId());
         Map<String, Object> currentSessionContext = sessionState.getSessionContext();
         String pendingField = pendingField(currentSessionContext);
         Map<String, Object> extractedPatch = pendingField == null
                 ? contextExtractionService.extractPatch(request.getMessage(), currentSessionContext)
-                : contextExtractionService.extractPendingFieldPatch(pendingField, request.getMessage(), currentSessionContext);
+                : contextExtractionService.extractPendingFieldPatch(
+                pendingField, request.getMessage(), currentSessionContext);
         normalizeCategoryRawPatch(request.getMessage(), sessionState.getSessionContext(), extractedPatch);
         Map<String, Object> sessionContext = contextMergeService.mergeSessionPatch(
                 sessionState.getSessionContext(),
                 extractedPatch
         );
         applyPendingFieldResult(sessionContext, pendingField, extractedPatch);
-        boolean allowLongTermFallback = shouldAllowLongTermFallback(sessionContext);
+        boolean allowLongTermFallback = true;
         Map<String, Object> effectiveContext = contextMergeService.buildEffectiveContext(
                 sessionContext,
                 profile,
                 allowLongTermFallback
         );
         sessionState.setSessionContext(sessionContext);
-
         String intentType = String.valueOf(effectiveContext.getOrDefault("intentType", "shopping"));
-        if ("small_talk".equalsIgnoreCase(intentType) || "non_shopping".equalsIgnoreCase(intentType)) {
-            String directReply = buildSmallTalkReply(request.getMessage());
-            sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), directReply);
-            ChatResponse response = new ChatResponse();
-            response.setSessionId(sessionId);
-            response.setReply(directReply);
-            response.setDebug(Map.of(
-                    "toolMode", "orchestrator_direct_reply",
-                    "reason", intentType,
-                    "sessionContext", sessionContext
-            ));
-            return response;
-        }
-
-        String clarification = buildClarificationIfNeeded(effectiveContext);
-        if (clarification != null) {
-            markAskedFields(sessionContext, effectiveContext);
-            markPendingField(sessionContext, effectiveContext, clarification);
-            sessionState.setSessionContext(sessionContext);
-            sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), clarification);
-            LongTermMemoryWriteResult memoryWrite = persistLongTermMemory(
-                    request.getUserId(),
-                    extractedPatch,
-                    Map.of(),
-                    effectiveContext,
-                    request.getMessage()
-            );
-            ChatResponse response = new ChatResponse();
-            response.setSessionId(sessionId);
-            response.setReply(clarification);
-            response.setDebug(buildMemoryDebugMap(
-                    "orchestrator_clarify",
-                    Map.of(
-                            "sessionContext", sessionContext,
-                            "effectiveContext", effectiveContext
-                    ),
-                    memoryWrite
-            ));
-            return response;
-        }
-
-        String userInput = buildUserInput(request.getMessage(), request.getUserId(), effectiveContext);
-
-        RunnableConfig runnableConfig = RunnableConfig.builder()
-                .threadId(sessionId)
-                .addMetadata("user_id", request.getUserId())
-                .build();
-        Map<String, Object> input = Map.of(
-                "input", userInput,
-                "chat_id", sessionId,
-                "user_id", request.getUserId()
-        );
-
-        CompiledGraph compiledGraph = supervisorAgent.getAndCompileGraph();
-        Flux<NodeOutput> stream = compiledGraph.fluxStream(input, runnableConfig);
-        List<NodeOutput> outputs = stream.collectList().block();
-
-        String rawReply = extractReply(outputs);
-        AgentResult agentResult = parseAgentResult(rawReply);
-        String reply = agentResult.assistantReply();
-        if (isInvalidReply(reply)) {
-            reply = buildFallbackShoppingReply(effectiveContext);
-        }
-
-        sessionStoreService.appendTurns(sessionId, sessionState, request.getMessage(), reply);
-        LongTermMemoryWriteResult memoryWrite = persistLongTermMemory(
-                request.getUserId(),
+        return new ChatPreparedContext(
+                sessionId,
+                sessionState,
+                profile,
                 extractedPatch,
-                agentResult.memoryPatch(),
+                sessionContext,
                 effectiveContext,
-                request.getMessage()
+                intentType
         );
+    }
 
-        ChatResponse response = new ChatResponse();
-        response.setSessionId(sessionId);
-        response.setReply(reply);
-        response.setDebug(buildMemoryDebugMap(
-                "a2a+nacos",
-                Map.of(
-                        "memoryProfile", profile,
-                        "sessionContext", sessionContext,
-                        "effectiveContext", effectiveContext
-                ),
-                memoryWrite
-        ));
-        return response;
+    private String resolveSessionId(String sessionId) {
+        return (sessionId == null || sessionId.isBlank()) ? UUID.randomUUID().toString() : sessionId;
+    }
+
+    private boolean isSmallTalkOrNonShopping(String intentType) {
+        return "small_talk".equalsIgnoreCase(intentType) || "non_shopping".equalsIgnoreCase(intentType);
+    }
+
+    private ServerSentEvent<String> sessionEvent(String sessionId) {
+        return streamEvent("session", Map.of("sessionId", sessionId));
+    }
+
+    private ServerSentEvent<String> deltaEvent(String content) {
+        return streamEvent("delta", Map.of("content", content));
+    }
+
+    private ServerSentEvent<String> doneEvent(String sessionId, String reply, Map<String, Object> debug) {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("sessionId", sessionId);
+        payload.put("reply", reply);
+        payload.put("debug", debug);
+        return streamEvent("done", payload);
+    }
+
+    private ServerSentEvent<String> errorEvent(String message) {
+        return streamEvent("error", Map.of("message", message));
+    }
+
+    private ServerSentEvent<String> streamEvent(String type, Map<String, Object> payload) {
+        Map<String, Object> event = new HashMap<>(payload);
+        event.put("type", type);
+        try {
+            return ServerSentEvent.<String>builder()
+                    .data(objectMapper.writeValueAsString(event))
+                    .build();
+        } catch (Exception e) {
+            return ServerSentEvent.<String>builder()
+                    .data("{\"type\":\"error\",\"message\":\"event serialization failed\"}")
+                    .build();
+        }
     }
 
     private LongTermMemoryWriteResult persistLongTermMemory(
@@ -182,6 +312,7 @@ public class ChatController {
             Map<String, Object> extractedPatch,
             Map<String, Object> agentMemoryPatch,
             Map<String, Object> effectiveContext,
+            Map<String, Object> existingProfile,
             String userMessage
     ) {
         Map<String, Object> extractionPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
@@ -192,9 +323,31 @@ public class ChatController {
                 extractedPatch,
                 userMessage
         );
-        Map<String, Object> mergedPatch = memoryMergeService.mergeForProfile(extractionPatch, agentPatch);
-        memoryClientService.mergePatch(userId, mergedPatch);
-        return new LongTermMemoryWriteResult(extractionPatch, agentPatch, mergedPatch);
+        Map<String, Object> sessionPatch = memoryMergeService.deriveSessionPreferencePatch(
+                effectiveContext,
+                extractedPatch,
+                existingProfile,
+                userMessage
+        );
+        Map<String, Object> mergedPatch = memoryMergeService.mergeForProfile(
+                memoryMergeService.mergeForProfile(extractionPatch, agentPatch),
+                sessionPatch
+        );
+        boolean shouldReconcile = ProfileListNormalizer.hasPreferenceIncoming(mergedPatch)
+                || memoryMergeService.sessionContradictsProfile(existingProfile, effectiveContext, userMessage);
+        if (!shouldReconcile) {
+            return new LongTermMemoryWriteResult(extractionPatch, agentPatch, mergedPatch, Map.of(), Map.of());
+        }
+        if (!ProfileListNormalizer.hasPreferenceIncoming(mergedPatch)) {
+            mergedPatch = sessionPatch;
+        }
+        Map<String, Object> reconciledPatch = profileReconcileService.reconcile(
+                existingProfile,
+                mergedPatch,
+                userMessage
+        );
+        memoryClientService.mergePatch(userId, reconciledPatch);
+        return new LongTermMemoryWriteResult(extractionPatch, agentPatch, mergedPatch, reconciledPatch, reconciledPatch);
     }
 
     private Map<String, Object> buildMemoryDebugMap(
@@ -207,14 +360,17 @@ public class ChatController {
         debug.put("memoryPatchFromExtraction", memoryWrite.extractionPatch());
         debug.put("memoryPatchFromAgent", memoryWrite.agentPatch());
         debug.put("memoryPatchMerged", memoryWrite.mergedPatch());
-        debug.put("profileWritten", memoryWrite.mergedPatch() != null && !memoryWrite.mergedPatch().isEmpty());
+        debug.put("memoryPatchReconciled", memoryWrite.reconciledPatch());
+        debug.put("profileWritten", memoryWrite.writtenPatch() != null && !memoryWrite.writtenPatch().isEmpty());
         return debug;
     }
 
     private record LongTermMemoryWriteResult(
             Map<String, Object> extractionPatch,
             Map<String, Object> agentPatch,
-            Map<String, Object> mergedPatch
+            Map<String, Object> mergedPatch,
+            Map<String, Object> reconciledPatch,
+            Map<String, Object> writtenPatch
     ) {
     }
 
@@ -227,7 +383,7 @@ public class ChatController {
                   "memoryPatch":{
                     "brandPreferences":["string"],
                     "dislikes":["string"],
-                    "notes":"string|null"
+                    "notes":["string"]
                   }
                 }
                 规则：
@@ -244,22 +400,6 @@ public class ChatController {
                 userMessage: %s
                 effectiveContext: %s
                 """.formatted(userId, message, effectiveContext);
-    }
-
-    private String extractReply(List<NodeOutput> outputs) {
-        if (outputs == null || outputs.isEmpty()) {
-            return "";
-        }
-        StringBuilder builder = new StringBuilder();
-        for (NodeOutput output : outputs) {
-            if ("a2aNode".equals(output.node()) && output instanceof StreamingOutput streamingOutput) {
-                String chunk = streamingOutput.chunk();
-                if (chunk != null && !chunk.isBlank() && !"Agent State: submitted".equals(chunk)) {
-                    builder.append(chunk);
-                }
-            }
-        }
-        return builder.toString();
     }
 
     private boolean containsAny(String text, String... words) {
@@ -396,12 +536,6 @@ public class ChatController {
                     .formatted(category);
         }
         return null;
-    }
-
-    private boolean shouldAllowLongTermFallback(Map<String, Object> sessionContext) {
-        boolean userUncertain = Boolean.TRUE.equals(sessionContext.get("userUncertain"));
-        List<String> askedFields = normalizeStringList(sessionContext.get("askedFields"));
-        return userUncertain || askedFields.contains("budget") || askedFields.contains("scene");
     }
 
     private String pendingField(Map<String, Object> sessionContext) {

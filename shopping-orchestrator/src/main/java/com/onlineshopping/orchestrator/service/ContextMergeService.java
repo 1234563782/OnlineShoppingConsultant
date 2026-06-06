@@ -1,5 +1,6 @@
 package com.onlineshopping.orchestrator.service;
 
+import com.onlineshopping.orchestrator.support.ProfileListNormalizer;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -48,11 +49,13 @@ public class ContextMergeService {
             Map<String, Object> longTermProfile,
             boolean allowLongTermFallback
     ) {
-        Map<String, Object> effective = new HashMap<>(sessionContext == null ? Map.of() : sessionContext);
+        Map<String, Object> session = sessionContext == null ? Map.of() : sessionContext;
+        Map<String, Object> effective = new HashMap<>(session);
         Map<String, Object> profile = longTermProfile == null ? Map.of() : longTermProfile;
         effective.put("longTermProfileReference", profile);
 
-        if (allowLongTermFallback && !hasBudgetValue(effective.get("budget"))) {
+        if (allowLongTermFallback && !hasBudgetValue(effective.get("budget"))
+                && shouldFallbackScalar(session, "budget")) {
             Map<String, Object> profileBudget = profileBudget(profile);
             if (!profileBudget.isEmpty()) {
                 effective.put("budget", profileBudget);
@@ -62,17 +65,93 @@ public class ContextMergeService {
             effective.put("budgetSource", "session_context");
         }
 
-        if (allowLongTermFallback) {
+        if (allowLongTermFallback && !hasValue(effective.get("scene"))
+                && shouldFallbackScalar(session, "scene")) {
             fillIfMissing(effective, profile, "scene");
-            mergeProfileListIfMissing(effective, profile, "brandPreferences");
-            mergeProfileListIfMissing(effective, profile, "dislikes");
         }
-        if (allowLongTermFallback && !hasValue(effective.get("notes")) && hasValue(profile.get("notes"))) {
-            effective.put("notes", profile.get("notes"));
+
+        if (allowLongTermFallback) {
+            applyProfilePreferenceFallback(effective, profile, session);
         }
+
         effective.put("longTermFallbackUsed", allowLongTermFallback);
         effective.put("missingFields", missingFields(effective));
         return effective;
+    }
+
+    /**
+     * Profile preference lists only fill gaps; session mustHave/dislikes always win.
+     */
+    private void applyProfilePreferenceFallback(
+            Map<String, Object> effective,
+            Map<String, Object> profile,
+            Map<String, Object> session
+    ) {
+        List<String> sessionMustHave = normalizeList(session.get("mustHave"));
+        List<String> sessionDislikes = normalizeList(effective.get("dislikes"));
+        List<String> sessionBrands = normalizeList(effective.get("brandPreferences"));
+        List<String> sessionNotes = normalizeList(effective.get("notes"));
+
+        if (!sessionMustHave.isEmpty()) {
+            return;
+        }
+        if (!shouldFallbackPreferences(session)) {
+            return;
+        }
+
+        if (sessionBrands.isEmpty()) {
+            mergeProfileListIfMissing(effective, profile, "brandPreferences");
+        }
+        if (sessionDislikes.isEmpty()) {
+            List<String> profileDislikes = normalizeList(profile.get("dislikes"));
+            List<String> filtered = filterConflictingWithMustHave(profileDislikes, sessionMustHave);
+            if (!filtered.isEmpty()) {
+                effective.put("dislikes", filtered);
+            }
+        }
+        if (sessionNotes.isEmpty()) {
+            mergeProfileListIfMissing(effective, profile, "notes");
+        }
+    }
+
+    private boolean shouldFallbackScalar(Map<String, Object> session, String field) {
+        if ("budget".equals(field) && hasBudgetValue(session.get("budget"))) {
+            return false;
+        }
+        if ("scene".equals(field) && hasValue(session.get("scene"))) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(session.get("userUncertain"))) {
+            return true;
+        }
+        List<String> askedFields = normalizeList(session.get("askedFields"));
+        return askedFields.contains(field);
+    }
+
+    private boolean shouldFallbackPreferences(Map<String, Object> session) {
+        if (Boolean.TRUE.equals(session.get("userUncertain"))) {
+            return true;
+        }
+        return shouldFallbackScalar(session, "budget") || shouldFallbackScalar(session, "scene");
+    }
+
+    private List<String> filterConflictingWithMustHave(List<String> dislikes, List<String> mustHave) {
+        if (dislikes.isEmpty() || mustHave.isEmpty()) {
+            return dislikes;
+        }
+        List<String> result = new ArrayList<>();
+        for (String dislike : dislikes) {
+            boolean conflicts = mustHave.stream().anyMatch(must -> textsOverlap(dislike, must));
+            if (!conflicts) {
+                result.add(dislike);
+            }
+        }
+        return result;
+    }
+
+    private boolean textsOverlap(String left, String right) {
+        return ProfileListNormalizer.containsIgnoreCase(left, right)
+                || ProfileListNormalizer.containsIgnoreCase(right, left);
     }
 
     public Map<String, Object> toMemoryPatch(Map<String, Object> sessionContext) {
@@ -108,8 +187,8 @@ public class ContextMergeService {
         if (!dislikes.isEmpty()) {
             patch.put("dislikes", dislikes);
         }
-        Object notes = rawPatch.get("notes");
-        if (hasValue(notes)) {
+        List<String> notes = ProfileListNormalizer.normalizeList(rawPatch.get("notes"));
+        if (!notes.isEmpty()) {
             patch.put("notes", notes);
         }
         return patch;
@@ -173,16 +252,7 @@ public class ContextMergeService {
     }
 
     private List<String> normalizeList(Object value) {
-        if (!(value instanceof List<?> list)) {
-            return List.of();
-        }
-        List<String> result = new ArrayList<>();
-        for (Object item : list) {
-            if (item != null && !item.toString().isBlank()) {
-                result.add(item.toString().trim());
-            }
-        }
-        return result;
+        return ProfileListNormalizer.normalizeList(value);
     }
 
     private boolean hasAnyValue(Map<?, ?> map) {

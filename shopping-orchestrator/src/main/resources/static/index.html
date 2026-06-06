@@ -6,7 +6,9 @@
   <title>Online Shopping Consultant</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; max-width: 900px; }
-    #log { border: 1px solid #ddd; border-radius: 8px; padding: 12px; min-height: 260px; white-space: pre-wrap; }
+    #log { border: 1px solid #ddd; border-radius: 8px; padding: 12px; min-height: 260px; }
+    .user-line { margin: 8px 0; white-space: pre-wrap; }
+    .assistant-line { margin: 8px 0; white-space: pre-wrap; line-height: 1.6; }
     .row { margin-top: 12px; display: flex; gap: 8px; }
     input, button { padding: 8px; }
     #msg { flex: 1; }
@@ -31,27 +33,126 @@
   const msg = document.getElementById('msg');
   const send = document.getElementById('send');
 
-  function append(text) {
-    log.textContent += text + "\n";
+  function appendUser(text) {
+    const el = document.createElement('div');
+    el.className = 'user-line';
+    el.textContent = '你: ' + text;
+    log.appendChild(el);
     log.scrollTop = log.scrollHeight;
   }
 
+  function appendError(text) {
+    const el = document.createElement('div');
+    el.className = 'assistant-line';
+    el.textContent = '助手: [错误] ' + text;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function looksLikeJsonEnvelope(text) {
+    if (!text) return false;
+    const trimmed = text.trim();
+    return trimmed.startsWith('{') &&
+      (trimmed.includes('"assistantReply"') || trimmed.includes('"memoryPatch"'));
+  }
+
+  function parseSseEvents(buffer) {
+    const events = [];
+    const parts = buffer.split('\n\n');
+    const rest = parts.pop() ?? '';
+    for (const part of parts) {
+      for (const line of part.split('\n')) {
+        if (line.startsWith('data:')) {
+          const payload = line.slice(5).trim();
+          if (!payload) continue;
+          try {
+            events.push(JSON.parse(payload));
+          } catch (e) {
+            console.warn('invalid sse json', payload);
+          }
+        }
+      }
+    }
+    return { events, rest };
+  }
+
   send.onclick = async () => {
+    const message = msg.value.trim();
+    if (!message) return;
+
     const body = {
       userId: uid.value,
-      sessionId: (!sid.value || sid.value === "undefined") ? null : sid.value,
-      message: msg.value
+      sessionId: (!sid.value || sid.value === 'undefined') ? null : sid.value,
+      message
     };
-    append("你: " + body.message);
-    const resp = await fetch('/api/v1/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    const data = await resp.json();
-    sid.value = data.sessionId || "";
-    append("助手: " + data.reply);
-    msg.value = "";
+    appendUser(message);
+
+    send.disabled = true;
+    let assistantEl = document.createElement('div');
+    assistantEl.className = 'assistant-line';
+    assistantEl.textContent = '助手: ';
+    log.appendChild(assistantEl);
+    let assistantText = '';
+
+    try {
+      const resp = await fetch('/api/v1/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!resp.ok) {
+        assistantEl.remove();
+        appendError('HTTP ' + resp.status);
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = parseSseEvents(buffer);
+        buffer = parsed.rest;
+
+        for (const event of parsed.events) {
+          if (event.type === 'session' && event.sessionId) {
+            sid.value = event.sessionId;
+          }
+          if (event.type === 'delta' && event.content && !looksLikeJsonEnvelope(event.content)) {
+            assistantText += event.content;
+            assistantEl.textContent = '助手: ' + assistantText;
+            log.scrollTop = log.scrollHeight;
+          }
+          if (event.type === 'done') {
+            if (event.sessionId) {
+              sid.value = event.sessionId;
+            }
+            if (event.reply) {
+              assistantText = event.reply;
+              assistantEl.textContent = '助手: ' + assistantText;
+              log.scrollTop = log.scrollHeight;
+            }
+          }
+          if (event.type === 'error') {
+            assistantEl.remove();
+            appendError(event.message || 'unknown');
+          }
+        }
+      }
+    } catch (err) {
+      assistantEl.remove();
+      appendError(err.message);
+    } finally {
+      send.disabled = false;
+      msg.value = '';
+    }
   };
 </script>
 </body>

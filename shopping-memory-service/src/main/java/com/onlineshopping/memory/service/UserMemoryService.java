@@ -28,6 +28,8 @@ public class UserMemoryService {
             "lastUpdatedAt"
     );
 
+    private static final String RECONCILE_REPLACE_KEY = "_reconcileReplace";
+
     private final UserMemoryRepository repository;
     private final ObjectMapper objectMapper;
 
@@ -79,22 +81,27 @@ public class UserMemoryService {
     }
 
     private Map<String, Object> merge(Map<String, Object> current, Map<String, Object> patch) {
+        boolean replace = Boolean.TRUE.equals(patch.get(RECONCILE_REPLACE_KEY));
         Map<String, Object> result = new HashMap<>(current);
         for (Map.Entry<String, Object> entry : patch.entrySet()) {
             String key = entry.getKey();
-            if (!ALLOWED_FIELDS.contains(key)) {
+            if (RECONCILE_REPLACE_KEY.equals(key) || !ALLOWED_FIELDS.contains(key)) {
                 continue;
             }
             Object value = entry.getValue();
             if (value == null) {
                 continue;
             }
-            if ("brandPreferences".equals(key) || "dislikes".equals(key)) {
-                List<String> oldValues = normalizeStringList(result.get(key));
-                List<String> newValues = normalizeStringList(value);
-                Set<String> merged = new HashSet<>(oldValues);
-                merged.addAll(newValues);
-                result.put(key, new ArrayList<>(merged));
+            if ("brandPreferences".equals(key) || "dislikes".equals(key) || "notes".equals(key)) {
+                if (replace) {
+                    result.put(key, normalizeStringList(value));
+                } else {
+                    List<String> oldValues = normalizeStringList(result.get(key));
+                    List<String> newValues = normalizeStringList(value);
+                    Set<String> merged = new HashSet<>(oldValues);
+                    merged.addAll(newValues);
+                    result.put(key, new ArrayList<>(merged));
+                }
             } else {
                 result.put(key, value);
             }
@@ -135,7 +142,10 @@ public class UserMemoryService {
             pieces.add("避免 " + profile.get("dislikes"));
         }
         if (profile.get("notes") != null) {
-            pieces.add("备注 " + profile.get("notes"));
+            List<String> notes = normalizeStringList(profile.get("notes"));
+            if (!notes.isEmpty()) {
+                pieces.add("备注 " + String.join("、", notes));
+            }
         }
         return String.join("；", pieces);
     }

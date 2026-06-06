@@ -47,9 +47,13 @@ public class ContextExtractionService {
                   "longTermMemoryPatch":{
                     "brandPreferences":["用户明确长期喜欢/偏好的品牌"],
                     "dislikes":["用户明确长期不喜欢/排斥的品牌或特征"],
-                    "notes":"稳定偏好或长期注意事项；本次预算、本次品类、本次临时场景不要写入"
+                    "notes":["稳定偏好或长期注意事项；本次预算、本次品类、本次临时场景不要写入"]
                   }
                 }
+                字段写入规则：
+                - 用户本轮明确说「喜欢/要/偏好/想要 X」时，必须把 X 写入 mustHave（本次选购硬性要求）。
+                - 若用户同时表达稳定长期偏好（如「以后都/平时/一直」），才额外写入 longTermMemoryPatch。
+                - 若用户明确推翻旧偏好（如以前排斥入耳式、现在说喜欢入耳式），longTermMemoryPatch.notes 写入新的正向偏好；不要保留已被推翻的 dislikes。
                 长期画像写入规则：
                 - 只有用户明确表达“我喜欢/我常用/我不要/以后都按这个/我比较在意”等稳定偏好，才写入 longTermMemoryPatch。
                 - 本次想买什么、本次预算、本次临时使用场景，只属于当前会话上下文，不要写入 longTermMemoryPatch。
@@ -110,9 +114,12 @@ public class ContextExtractionService {
                   "longTermMemoryPatch":{
                     "brandPreferences":["用户明确长期喜欢/偏好的品牌"],
                     "dislikes":["用户明确长期不喜欢/排斥的品牌或特征"],
-                    "notes":"稳定偏好或长期注意事项；本次预算、本次品类、本次临时场景不要写入"
+                    "notes":["稳定偏好或长期注意事项；本次预算、本次品类、本次临时场景不要写入"]
                   }
                 }
+                字段写入规则：
+                - 用户本轮明确说「喜欢/要/偏好/想要 X」时，必须把 X 写入 mustHave（本次选购硬性要求）。
+                - 若用户明确推翻旧偏好（如以前排斥入耳式、现在说喜欢入耳式），longTermMemoryPatch.notes 写入新的正向偏好；不要保留已被推翻的 dislikes。
 
                 已有会话上下文：
                 %s

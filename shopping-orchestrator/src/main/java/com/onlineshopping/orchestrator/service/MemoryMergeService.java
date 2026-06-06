@@ -1,5 +1,6 @@
 package com.onlineshopping.orchestrator.service;
 
+import com.onlineshopping.orchestrator.support.ProfileListNormalizer;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -28,7 +29,7 @@ public class MemoryMergeService {
         Map<String, Object> sanitized = new HashMap<>();
         if (!hasListValue(extractionPatch.get("brandPreferences"))) {
             List<String> grounded = filterGroundedListItems(
-                    normalizeList(agentPatch.get("brandPreferences")),
+                    ProfileListNormalizer.normalizeList(agentPatch.get("brandPreferences")),
                     effectiveContext,
                     extractionPatch,
                     extractedPatch,
@@ -41,7 +42,7 @@ public class MemoryMergeService {
         }
         if (!hasListValue(extractionPatch.get("dislikes"))) {
             List<String> grounded = filterGroundedListItems(
-                    normalizeList(agentPatch.get("dislikes")),
+                    ProfileListNormalizer.normalizeList(agentPatch.get("dislikes")),
                     effectiveContext,
                     extractionPatch,
                     extractedPatch,
@@ -52,11 +53,17 @@ public class MemoryMergeService {
                 sanitized.put("dislikes", grounded);
             }
         }
-        if (!hasValue(extractionPatch.get("notes"))) {
-            Object notes = agentPatch.get("notes");
-            if (hasValue(notes) && isNotesGrounded(
-                    notes.toString(), effectiveContext, extractionPatch, extractedPatch, userMessage)) {
-                sanitized.put("notes", notes.toString().trim());
+        if (!hasListValue(extractionPatch.get("notes"))) {
+            List<String> grounded = filterGroundedListItems(
+                    ProfileListNormalizer.normalizeList(agentPatch.get("notes")),
+                    effectiveContext,
+                    extractionPatch,
+                    extractedPatch,
+                    userMessage,
+                    "notes"
+            );
+            if (!grounded.isEmpty()) {
+                sanitized.put("notes", grounded);
             }
         }
         return sanitized;
@@ -74,12 +81,103 @@ public class MemoryMergeService {
         Map<String, Object> merged = new HashMap<>();
         putMergedList(merged, extraction, agent, "brandPreferences");
         putMergedList(merged, extraction, agent, "dislikes");
-        if (hasValue(extraction.get("notes"))) {
-            merged.put("notes", extraction.get("notes").toString().trim());
-        } else if (hasValue(agent.get("notes"))) {
-            merged.put("notes", agent.get("notes").toString().trim());
-        }
+        putMergedList(merged, extraction, agent, "notes");
         return merged;
+    }
+
+    /**
+     * Derives long-term preference patch from session-level mustHave / positive user message.
+     * Session "我喜欢入耳式" lands in mustHave, not longTermMemoryPatch — this bridges that gap.
+     */
+    public Map<String, Object> deriveSessionPreferencePatch(
+            Map<String, Object> effectiveContext,
+            Map<String, Object> extractedPatch,
+            Map<String, Object> existingProfile,
+            String userMessage
+    ) {
+        Map<String, Object> patch = new HashMap<>();
+        List<String> mustHave = ProfileListNormalizer.normalizeList(extractedPatch == null ? null : extractedPatch.get("mustHave"));
+        if (mustHave.isEmpty() && effectiveContext != null) {
+            mustHave = ProfileListNormalizer.normalizeList(effectiveContext.get("mustHave"));
+        }
+        List<String> positiveNotes = new ArrayList<>();
+        for (String item : mustHave) {
+            if (item != null && !item.isBlank()) {
+                positiveNotes.add("偏好" + item.trim());
+            }
+        }
+        List<String> profileDislikes = ProfileListNormalizer.normalizeList(
+                existingProfile == null ? null : existingProfile.get("dislikes"));
+        for (String dislike : profileDislikes) {
+            if (userExpressesPreferenceFor(userMessage, dislike)) {
+                positiveNotes.add("偏好" + dislike.trim());
+            }
+        }
+        if (!positiveNotes.isEmpty()) {
+            patch.put("notes", dedupePreserveOrder(positiveNotes));
+        }
+        return patch;
+    }
+
+    public boolean sessionContradictsProfile(
+            Map<String, Object> existingProfile,
+            Map<String, Object> effectiveContext,
+            String userMessage
+    ) {
+        if (existingProfile == null || existingProfile.isEmpty()) {
+            return false;
+        }
+        List<String> profileDislikes = ProfileListNormalizer.normalizeList(existingProfile.get("dislikes"));
+        if (profileDislikes.isEmpty()) {
+            return false;
+        }
+        List<String> mustHave = effectiveContext == null
+                ? List.of()
+                : ProfileListNormalizer.normalizeList(effectiveContext.get("mustHave"));
+        for (String must : mustHave) {
+            for (String dislike : profileDislikes) {
+                if (textsOverlap(must, dislike)) {
+                    return true;
+                }
+            }
+        }
+        for (String dislike : profileDislikes) {
+            if (userExpressesPreferenceFor(userMessage, dislike)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean userExpressesPreferenceFor(String userMessage, String term) {
+        if (userMessage == null || userMessage.isBlank() || term == null || term.isBlank()) {
+            return false;
+        }
+        String trimmed = term.trim();
+        if (!ProfileListNormalizer.containsIgnoreCase(userMessage, trimmed)) {
+            return false;
+        }
+        return userMessage.contains("喜欢")
+                || userMessage.contains("偏好")
+                || userMessage.contains("要")
+                || userMessage.contains("想要")
+                || userMessage.contains("倾向")
+                || userMessage.contains("希望");
+    }
+
+    private List<String> dedupePreserveOrder(List<String> values) {
+        LinkedHashSet<String> set = new LinkedHashSet<>();
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                set.add(value.trim());
+            }
+        }
+        return new ArrayList<>(set);
+    }
+
+    private boolean textsOverlap(String left, String right) {
+        return ProfileListNormalizer.containsIgnoreCase(left, right)
+                || ProfileListNormalizer.containsIgnoreCase(right, left);
     }
 
     private void putMergedList(
@@ -89,8 +187,8 @@ public class MemoryMergeService {
             String key
     ) {
         LinkedHashSet<String> values = new LinkedHashSet<>();
-        values.addAll(normalizeList(extraction.get(key)));
-        values.addAll(normalizeList(agent.get(key)));
+        values.addAll(ProfileListNormalizer.normalizeList(extraction.get(key)));
+        values.addAll(ProfileListNormalizer.normalizeList(agent.get(key)));
         if (!values.isEmpty()) {
             target.put(key, new ArrayList<>(values));
         }
@@ -141,46 +239,6 @@ public class MemoryMergeService {
         return listContainsIgnoreCase(profile, fieldName, normalizedItem);
     }
 
-    private boolean isNotesGrounded(
-            String notes,
-            Map<String, Object> effectiveContext,
-            Map<String, Object> extractionPatch,
-            Map<String, Object> extractedPatch,
-            String userMessage
-    ) {
-        if (notes == null || notes.isBlank()) {
-            return false;
-        }
-        String normalizedNotes = notes.trim();
-        if (containsIgnoreCase(userMessage, normalizedNotes)) {
-            return true;
-        }
-        if (notesMatchField(normalizedNotes, effectiveContext, "notes")) {
-            return true;
-        }
-        if (notesMatchField(normalizedNotes, extractionPatch, "notes")) {
-            return true;
-        }
-        if (notesMatchField(normalizedNotes, extractedPatch, "notes")) {
-            return true;
-        }
-        Map<String, Object> profile = longTermProfileReference(effectiveContext);
-        return notesMatchField(normalizedNotes, profile, "notes");
-    }
-
-    private boolean listContainsIgnoreCase(Map<String, Object> source, String fieldName, String item) {
-        return normalizeList(source == null ? null : source.get(fieldName)).stream()
-                .anyMatch(value -> equalsIgnoreCase(value, item));
-    }
-
-    private boolean notesMatchField(String notes, Map<String, Object> source, String fieldName) {
-        if (source == null) {
-            return false;
-        }
-        Object value = source.get(fieldName);
-        return hasValue(value) && textsOverlap(notes, value.toString());
-    }
-
     @SuppressWarnings("unchecked")
     private Map<String, Object> longTermProfileReference(Map<String, Object> effectiveContext) {
         if (effectiveContext == null) {
@@ -193,43 +251,13 @@ public class MemoryMergeService {
         return Map.of();
     }
 
-    private boolean textsOverlap(String left, String right) {
-        String a = left == null ? "" : left.trim();
-        String b = right == null ? "" : right.trim();
-        if (a.isBlank() || b.isBlank()) {
-            return false;
-        }
-        return containsIgnoreCase(a, b) || containsIgnoreCase(b, a);
-    }
-
-    private List<String> normalizeList(Object value) {
-        if (!(value instanceof List<?> list)) {
-            return List.of();
-        }
-        List<String> result = new ArrayList<>();
-        for (Object item : list) {
-            if (item != null && !item.toString().isBlank()) {
-                result.add(item.toString().trim());
-            }
-        }
-        return result;
+    private boolean listContainsIgnoreCase(Map<String, Object> source, String fieldName, String item) {
+        return ProfileListNormalizer.normalizeList(source == null ? null : source.get(fieldName)).stream()
+                .anyMatch(value -> equalsIgnoreCase(value, item));
     }
 
     private boolean hasListValue(Object value) {
-        return !normalizeList(value).isEmpty();
-    }
-
-    private boolean hasValue(Object value) {
-        if (value == null) {
-            return false;
-        }
-        if (value instanceof String s) {
-            return !s.isBlank() && !"null".equalsIgnoreCase(s);
-        }
-        if (value instanceof List<?> list) {
-            return !list.isEmpty();
-        }
-        return true;
+        return !ProfileListNormalizer.normalizeList(value).isEmpty();
     }
 
     private boolean containsIgnoreCase(String text, String needle) {

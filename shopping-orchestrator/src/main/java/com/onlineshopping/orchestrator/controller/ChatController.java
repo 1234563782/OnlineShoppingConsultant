@@ -7,9 +7,11 @@ import com.alibaba.cloud.ai.graph.agent.flow.agent.LlmRoutingAgent;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
 import com.onlineshopping.orchestrator.dto.ChatRequest;
 import com.onlineshopping.orchestrator.dto.SessionState;
+import com.onlineshopping.orchestrator.service.CategoryResolutionService;
 import com.onlineshopping.orchestrator.service.ContextExtractionService;
 import com.onlineshopping.orchestrator.service.ContextMergeService;
 import com.onlineshopping.orchestrator.service.MemoryClientService;
@@ -47,6 +49,7 @@ public class ChatController {
     private final ContextMergeService contextMergeService;
     private final MemoryMergeService memoryMergeService;
     private final ProfileReconcileService profileReconcileService;
+    private final CategoryResolutionService categoryResolutionService;
     private final ObjectMapper objectMapper;
 
     public ChatController(
@@ -57,6 +60,7 @@ public class ChatController {
             ContextMergeService contextMergeService,
             MemoryMergeService memoryMergeService,
             ProfileReconcileService profileReconcileService,
+            CategoryResolutionService categoryResolutionService,
             ObjectMapper objectMapper
     ) {
         this.supervisorAgent = supervisorAgent;
@@ -66,6 +70,7 @@ public class ChatController {
         this.contextMergeService = contextMergeService;
         this.memoryMergeService = memoryMergeService;
         this.profileReconcileService = profileReconcileService;
+        this.categoryResolutionService = categoryResolutionService;
         this.objectMapper = objectMapper;
     }
 
@@ -108,7 +113,8 @@ public class ChatController {
                             "orchestrator_clarify",
                             Map.of(
                                     "sessionContext", prepared.sessionContext(),
-                                    "effectiveContext", prepared.effectiveContext()
+                                    "effectiveContext", prepared.effectiveContext(),
+                                    "categoryResolution", prepared.categoryResolution().toDebugMap()
                             ),
                             memoryWrite
                     );
@@ -197,7 +203,8 @@ public class ChatController {
                 Map.of(
                         "memoryProfile", prepared.profile(),
                         "sessionContext", prepared.sessionContext(),
-                        "effectiveContext", prepared.effectiveContext()
+                        "effectiveContext", prepared.effectiveContext(),
+                        "categoryResolution", prepared.categoryResolution().toDebugMap()
                 ),
                 memoryWrite
         );
@@ -245,13 +252,19 @@ public class ChatController {
                 sessionState.getSessionContext(),
                 extractedPatch
         );
-        applyPendingFieldResult(sessionContext, pendingField, extractedPatch);
+        applyPendingFieldResult(sessionContext, pendingField, extractedPatch, request.getMessage());
+        applyCategoryConfirmation(request.getMessage(), pendingField, sessionContext);
+        CategoryResolutionResult categoryResolution = categoryResolutionService.resolve(sessionContext);
         boolean allowLongTermFallback = true;
         Map<String, Object> effectiveContext = contextMergeService.buildEffectiveContext(
                 sessionContext,
                 profile,
                 allowLongTermFallback
         );
+        effectiveContext.put("categoryResolution", sessionContext.getOrDefault("categoryResolution", CategoryResolutionResult.STATUS_SKIPPED));
+        if (sessionContext.get("categoryConfidence") != null) {
+            effectiveContext.put("categoryConfidence", sessionContext.get("categoryConfidence"));
+        }
         sessionState.setSessionContext(sessionContext);
         String intentType = String.valueOf(effectiveContext.getOrDefault("intentType", "shopping"));
         return new ChatPreparedContext(
@@ -261,7 +274,8 @@ public class ChatController {
                 extractedPatch,
                 sessionContext,
                 effectiveContext,
-                intentType
+                intentType,
+                categoryResolution
         );
     }
 
@@ -336,6 +350,7 @@ public class ChatController {
         boolean shouldReconcile = ProfileListNormalizer.hasPreferenceIncoming(mergedPatch)
                 || memoryMergeService.sessionContradictsProfile(existingProfile, effectiveContext, userMessage);
         if (!shouldReconcile) {
+            
             return new LongTermMemoryWriteResult(extractionPatch, agentPatch, mergedPatch, Map.of(), Map.of());
         }
         if (!ProfileListNormalizer.hasPreferenceIncoming(mergedPatch)) {
@@ -388,13 +403,14 @@ public class ChatController {
                 }
                 规则：
                 1. effectiveContext 是主Agent已经整理好的本次咨询上下文，以它为准执行。
-                2. 你是推荐执行者，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须调用工具并给出具体推荐。
-                3. 如果预算缺失或用户说“先看看”，按不同价位/常见档位推荐；如果场景缺失，按通用需求假设推荐并说明假设。
-                4. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
-                5. 推荐时必须给出具体款式（名称+大致价格+理由）。
-                6. 如果工具返回当前品类或价格段没有精确命中，要如实说明，并推荐工具给出的其他品类或其他价格段候选。
-                7. memoryPatch 仅包含用户在本轮或 effectiveContext 中已明确表达的稳定长期偏好，允许字段只有 brandPreferences、dislikes、notes。
-                8. 禁止推测用户未说过的品牌、排斥项或长期备注；不要填写 budget、scene；无新增长期偏好时返回空对象 {}。
+                2. 调用 searchProduct 时必须优先传 effectiveContext.categoryId；仅当 categoryId 为空时才传 categoryRaw。
+                3. 你是推荐执行者，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须调用工具并给出具体推荐。
+                4. 如果预算缺失或用户说“先看看”，按不同价位/常见档位推荐；如果场景缺失，按通用需求假设推荐并说明假设。
+                5. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
+                6. 推荐时必须给出具体款式（名称+大致价格+理由）。
+                7. 如果工具返回当前品类或价格段没有精确命中，要如实说明，并推荐工具给出的其他品类或其他价格段候选。
+                8. memoryPatch 仅包含用户在本轮或 effectiveContext 中已明确表达的稳定长期偏好，允许字段只有 brandPreferences、dislikes、notes。
+                9. 禁止推测用户未说过的品牌、排斥项或长期备注；不要填写 budget、scene；无新增长期偏好时返回空对象 {}。
                                 
                 userId: %s
                 userMessage: %s
@@ -481,6 +497,9 @@ public class ChatController {
             extractedPatch.put("categoryRaw", extractedPatch.get("category"));
         }
         extractedPatch.remove("category");
+        if (!hasValue(extractedPatch.get("categoryRaw")) && hasValue(extractedPatch.get("categoryName"))) {
+            extractedPatch.put("categoryRaw", extractedPatch.get("categoryName"));
+        }
         extractedPatch.remove("categoryId");
         extractedPatch.remove("categoryName");
 
@@ -523,7 +542,27 @@ public class ChatController {
         List<?> missingFields = effectiveContext.get("missingFields") instanceof List<?> list ? list : List.of();
         boolean userUncertain = Boolean.TRUE.equals(effectiveContext.get("userUncertain"));
         List<String> askedFields = normalizeStringList(effectiveContext.get("askedFields"));
+        String categoryResolution = effectiveContext.get("categoryResolution") == null
+                ? ""
+                : effectiveContext.get("categoryResolution").toString();
+        Object categoryRaw = effectiveContext.get("categoryRaw");
+        Object categoryName = effectiveContext.get("categoryName");
+
+        if (missingFields.contains("categoryConfirm") && !askedFields.contains("categoryConfirm")) {
+            return "您说的「%s」，是指「%s」这个品类吗？可以直接回复“是”或纠正我。"
+                    .formatted(
+                            categoryRaw == null ? "这个商品" : categoryRaw,
+                            categoryName == null ? categoryRaw : categoryName
+                    );
+        }
         if (missingFields.contains("category")) {
+            if (CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE.equals(categoryResolution)) {
+                return "类目服务暂时不可用，请稍后再试；你也可以直接说具体品类，如手机、耳机、电脑。";
+            }
+            if (CategoryResolutionResult.STATUS_UNRESOLVED.equals(categoryResolution) && hasValue(categoryRaw)) {
+                return "我暂时没识别到「%s」对应的商品品类，能再说具体一点吗？比如手机、电脑、平板。"
+                        .formatted(categoryRaw);
+            }
             return "你想买什么品类或商品？可以直接说商品名、预算、使用场景和偏好。";
         }
         Object category = categoryLabel(effectiveContext);
@@ -548,7 +587,8 @@ public class ChatController {
     private void applyPendingFieldResult(
             Map<String, Object> sessionContext,
             String pendingField,
-            Map<String, Object> extractedPatch
+            Map<String, Object> extractedPatch,
+            String userMessage
     ) {
         if (pendingField == null || sessionContext == null) {
             return;
@@ -556,8 +596,11 @@ public class ChatController {
         boolean answered = Boolean.TRUE.equals(extractedPatch.get("answeredPendingField"));
         boolean userUncertain = Boolean.TRUE.equals(extractedPatch.get("userUncertain"));
         boolean categoryChanged = hasValue(extractedPatch.get("categoryRaw"))
-                && !"category".equalsIgnoreCase(pendingField);
-        if (answered || userUncertain || categoryChanged || Boolean.FALSE.equals(extractedPatch.get("shouldKeepPending"))) {
+                && !"category".equalsIgnoreCase(pendingField)
+                && !"categoryConfirm".equalsIgnoreCase(pendingField);
+        boolean categoryConfirmed = "categoryConfirm".equalsIgnoreCase(pendingField) && isAffirmativeReply(userMessage);
+        if (answered || userUncertain || categoryChanged || categoryConfirmed
+                || Boolean.FALSE.equals(extractedPatch.get("shouldKeepPending"))) {
             sessionContext.remove("pendingField");
             sessionContext.remove("pendingQuestion");
             return;
@@ -565,14 +608,41 @@ public class ChatController {
         sessionContext.put("pendingField", pendingField);
     }
 
-    private void markAskedFields(Map<String, Object> sessionContext, Map<String, Object> effectiveContext) {
-        List<?> missingFields = effectiveContext.get("missingFields") instanceof List<?> list ? list : List.of();
-        java.util.LinkedHashSet<String> askedFields = new java.util.LinkedHashSet<>(normalizeStringList(sessionContext.get("askedFields")));
-        for (Object field : missingFields) {
-            if (field != null) {
-                askedFields.add(field.toString());
-            }
+    private void applyCategoryConfirmation(
+            String userMessage,
+            String pendingField,
+            Map<String, Object> sessionContext
+    ) {
+        if (sessionContext == null) {
+            return;
         }
+        if ("categoryConfirm".equalsIgnoreCase(pendingField) && isAffirmativeReply(userMessage)) {
+            sessionContext.put("categoryResolution", CategoryResolutionResult.STATUS_RESOLVED);
+        }
+    }
+
+    private boolean isAffirmativeReply(String userMessage) {
+        if (userMessage == null || userMessage.isBlank()) {
+            return false;
+        }
+        String text = userMessage.trim().toLowerCase(java.util.Locale.ROOT);
+        return text.equals("是")
+                || text.equals("对")
+                || text.equals("嗯")
+                || text.equals("yes")
+                || text.equals("y")
+                || text.contains("没错")
+                || text.contains("是的")
+                || text.contains("对的");
+    }
+
+    private void markAskedFields(Map<String, Object> sessionContext, Map<String, Object> effectiveContext) {
+        String nextField = nextClarificationField(effectiveContext);
+        if (nextField == null) {
+            return;
+        }
+        java.util.LinkedHashSet<String> askedFields = new java.util.LinkedHashSet<>(normalizeStringList(sessionContext.get("askedFields")));
+        askedFields.add(nextField);
         sessionContext.put("askedFields", new ArrayList<>(askedFields));
     }
 
@@ -595,6 +665,9 @@ public class ChatController {
         List<?> missingFields = effectiveContext.get("missingFields") instanceof List<?> list ? list : List.of();
         boolean userUncertain = Boolean.TRUE.equals(effectiveContext.get("userUncertain"));
         List<String> askedFields = normalizeStringList(effectiveContext.get("askedFields"));
+        if (missingFields.contains("categoryConfirm") && !askedFields.contains("categoryConfirm")) {
+            return "categoryConfirm";
+        }
         if (missingFields.contains("category")) {
             return "category";
         }
@@ -641,6 +714,9 @@ public class ChatController {
         }
         if (hasValue(context.get("categoryRaw"))) {
             return context.get("categoryRaw");
+        }
+        if (hasValue(context.get("categoryId"))) {
+            return context.get("categoryId");
         }
         return context.get("category");
     }

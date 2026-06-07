@@ -7,7 +7,7 @@
 - `shopping-orchestrator`：总控 Agent，对外 `POST /api/v1/chat`（SSE 流式）+ Web 聊天页
 - `shopping-consult-agent`：咨询导购 Agent（A2A Server）
 - `shopping-memory-service`：用户长期画像（MySQL，REST）
-- `shopping-catalog-mcp-server`：商品搜索/详情工具（MCP）
+- `shopping-catalog-mcp-server`：商品搜索/详情工具（MCP）+ **类目归一化 REST**（供 orchestrator 调用）
 - `shopping-inventory-mcp-server`：库存工具（MCP）
 - `shopping-promotion-mcp-server`：优惠工具（MCP）
 
@@ -50,6 +50,8 @@ docker compose up -d
 - `SHOPPING_MEMORY_DB_URL`
 - `SHOPPING_MEMORY_DB_USERNAME`
 - `SHOPPING_MEMORY_DB_PASSWORD`
+- `SHOPPING_CATALOG_BASE_URL`（orchestrator 调 catalog 做类目归一化，默认 `http://localhost:8083`）
+- `SHOPPING_CATALOG_CONFIDENCE_THRESHOLD`（可选，默认 `0.85`）
 
 > 不要把 `.env` 提交到 Git。
 

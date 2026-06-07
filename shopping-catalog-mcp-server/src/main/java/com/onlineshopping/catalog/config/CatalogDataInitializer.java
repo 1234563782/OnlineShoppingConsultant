@@ -67,7 +67,7 @@ public class CatalogDataInitializer implements ApplicationRunner {
         }
         categoryRepository.saveAll(List.of(
                 category("cat_phone", "手机", "智能手机,安卓手机,iPhone,苹果手机"),
-                category("cat_headphone", "耳机", "蓝牙耳机,降噪耳机,头戴耳机,无线耳机"),
+                category("cat_headphone", "耳机", "蓝牙耳机,降噪耳机,头戴耳机,无线耳机,入耳式,TWS,真无线"),
                 category("cat_computer", "电脑", "笔记本,笔记本电脑,轻薄本,游戏本,台式机"),
                 category("cat_tablet", "平板", "平板电脑,iPad,安卓平板"),
                 category("cat_watch", "手表", "智能手表,运动手表,Apple Watch,华为手表"),

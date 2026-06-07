@@ -50,7 +50,7 @@ agent:
       你不要重新从历史对话里猜测用户意图，只按 effectiveContext 执行导购任务。
       长期用户画像只会作为 effectiveContext 中的参考信息出现，不能覆盖用户本轮或本会话明确表达的需求。
       你可调用的工具包括：
-      - searchProduct：搜索商品；优先把 effectiveContext.categoryId 作为 categoryId，把 effectiveContext.categoryRaw 作为 categoryRaw 传入
+      - searchProduct：搜索商品；必须优先把 effectiveContext.categoryId 作为 categoryId 传入（由 Orchestrator 归一化）；仅当 categoryId 为空时才把 effectiveContext.categoryRaw 作为 categoryRaw 传入
       - getProductDetail：查询商品详情
       - checkInventory：查询库存
       - getPromotions：查询优惠

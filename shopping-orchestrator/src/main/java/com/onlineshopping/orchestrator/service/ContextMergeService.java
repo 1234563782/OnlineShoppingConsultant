@@ -1,5 +1,6 @@
 package com.onlineshopping.orchestrator.service;
 
+import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
 import com.onlineshopping.orchestrator.support.ProfileListNormalizer;
 import org.springframework.stereotype.Service;
 
@@ -323,9 +324,22 @@ public class ContextMergeService {
 
     private List<String> missingFields(Map<String, Object> effective) {
         List<String> missing = new ArrayList<>();
-        if (!hasCategoryValue(effective)) {
+        String categoryResolution = stringValue(effective.get("categoryResolution"));
+        boolean hasCategoryId = hasValue(effective.get("categoryId"));
+        boolean hasCategoryRaw = hasValue(effective.get("categoryRaw"));
+        List<String> askedFields = normalizeList(effective.get("askedFields"));
+
+        if (!hasCategoryRaw && !hasCategoryId) {
+            missing.add("category");
+        } else if (CategoryResolutionResult.STATUS_UNRESOLVED.equals(categoryResolution)) {
+            missing.add("category");
+        } else if (CategoryResolutionResult.STATUS_LOW_CONFIDENCE.equals(categoryResolution)
+                && !askedFields.contains("categoryConfirm")) {
+            missing.add("categoryConfirm");
+        } else if (!hasCategoryId) {
             missing.add("category");
         }
+
         if (!hasBudgetValue(effective.get("budget"))) {
             missing.add("budget");
         }
@@ -333,5 +347,13 @@ public class ContextMergeService {
             missing.add("scene");
         }
         return missing;
+    }
+
+    private String stringValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isBlank() ? null : text;
     }
 }

@@ -9,6 +9,7 @@ public record ChatPreparedContext(
         Map<String, Object> extractedPatch,
         Map<String, Object> sessionContext,
         Map<String, Object> effectiveContext,
-        String intentType
+        String intentType,
+        CategoryResolutionResult categoryResolution
 ) {
 }

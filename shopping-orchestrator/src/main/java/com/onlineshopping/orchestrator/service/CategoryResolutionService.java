@@ -56,6 +56,20 @@ public class CategoryResolutionService {
         sessionContext.put("categoryRaw", categoryRaw);
         sessionContext.put("categoryConfidence", confidence);
 
+        if (CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE.equals(status)) {
+            sessionContext.remove("categoryId");
+            sessionContext.remove("categoryName");
+            sessionContext.put("categoryResolution", CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE);
+            return new CategoryResolutionResult(
+                    CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE,
+                    null,
+                    null,
+                    categoryRaw,
+                    confidence,
+                    matchedBy
+            );
+        }
+
         if (CategoryResolutionResult.STATUS_RESOLVED.equals(status)
                 && categoryId != null
                 && confidence >= confidenceThreshold) {

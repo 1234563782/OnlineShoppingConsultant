@@ -1,7 +1,6 @@
 package com.onlineshopping.orchestrator.service;
 
 import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
-import com.onlineshopping.orchestrator.support.LocalCategoryNormalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -10,7 +9,6 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
 import java.util.Map;
 
 @Service
@@ -22,9 +20,6 @@ public class CategoryClientService {
 
     @Value("${shopping.catalog.base-url:http://localhost:8083}")
     private String catalogBaseUrl;
-
-    @Value("${shopping.catalog.fallback-enabled:true}")
-    private boolean fallbackEnabled;
 
     public CategoryClientService(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
@@ -54,11 +49,6 @@ public class CategoryClientService {
             log.warn("Catalog normalize returned empty for raw={}", trimmed);
         } catch (Exception e) {
             log.warn("Catalog normalize failed for raw={}: {}", trimmed, e.getMessage());
-            if (fallbackEnabled) {
-                Map<String, Object> fallback = new HashMap<>(LocalCategoryNormalizer.normalize(trimmed));
-                fallback.put("catalogError", e.getMessage() == null ? "catalog unavailable" : e.getMessage());
-                return fallback;
-            }
             return Map.of(
                     "status", CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE,
                     "categoryRaw", trimmed,
@@ -66,9 +56,10 @@ public class CategoryClientService {
                     "error", e.getMessage() == null ? "catalog unavailable" : e.getMessage()
             );
         }
-        if (fallbackEnabled) {
-            return LocalCategoryNormalizer.normalize(trimmed);
-        }
-        return Map.of("status", CategoryResolutionResult.STATUS_UNRESOLVED, "categoryRaw", trimmed, "confidence", 0.0);
+        return Map.of(
+                "status", CategoryResolutionResult.STATUS_UNRESOLVED,
+                "categoryRaw", trimmed,
+                "confidence", 0.0
+        );
     }
 }

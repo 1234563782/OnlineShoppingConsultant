@@ -15,11 +15,9 @@ import com.onlineshopping.orchestrator.service.CategoryResolutionService;
 import com.onlineshopping.orchestrator.service.ContextExtractionService;
 import com.onlineshopping.orchestrator.service.ContextMergeService;
 import com.onlineshopping.orchestrator.service.MemoryClientService;
-import com.onlineshopping.orchestrator.service.MemoryMergeService;
-import com.onlineshopping.orchestrator.service.ProfileReconcileService;
+import com.onlineshopping.orchestrator.service.LongTermMemoryWriteService;
 import com.onlineshopping.orchestrator.service.SessionStoreService;
 import com.onlineshopping.orchestrator.support.AssistantReplyStreamFilter;
-import com.onlineshopping.orchestrator.support.ProfileListNormalizer;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
@@ -47,8 +45,7 @@ public class ChatController {
     private final MemoryClientService memoryClientService;
     private final ContextExtractionService contextExtractionService;
     private final ContextMergeService contextMergeService;
-    private final MemoryMergeService memoryMergeService;
-    private final ProfileReconcileService profileReconcileService;
+    private final LongTermMemoryWriteService longTermMemoryWriteService;
     private final CategoryResolutionService categoryResolutionService;
     private final ObjectMapper objectMapper;
 
@@ -58,8 +55,7 @@ public class ChatController {
             MemoryClientService memoryClientService,
             ContextExtractionService contextExtractionService,
             ContextMergeService contextMergeService,
-            MemoryMergeService memoryMergeService,
-            ProfileReconcileService profileReconcileService,
+            LongTermMemoryWriteService longTermMemoryWriteService,
             CategoryResolutionService categoryResolutionService,
             ObjectMapper objectMapper
     ) {
@@ -68,8 +64,7 @@ public class ChatController {
         this.memoryClientService = memoryClientService;
         this.contextExtractionService = contextExtractionService;
         this.contextMergeService = contextMergeService;
-        this.memoryMergeService = memoryMergeService;
-        this.profileReconcileService = profileReconcileService;
+        this.longTermMemoryWriteService = longTermMemoryWriteService;
         this.categoryResolutionService = categoryResolutionService;
         this.objectMapper = objectMapper;
     }
@@ -101,10 +96,9 @@ public class ChatController {
                     markPendingField(prepared.sessionContext(), prepared.effectiveContext(), clarification);
                     prepared.sessionState().setSessionContext(prepared.sessionContext());
                     sessionStoreService.appendTurns(sessionId, prepared.sessionState(), request.getMessage(), clarification);
-                    LongTermMemoryWriteResult memoryWrite = persistLongTermMemory(
+                    LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
                             request.getUserId(),
                             prepared.extractedPatch(),
-                            Map.of(),
                             prepared.effectiveContext(),
                             prepared.profile(),
                             request.getMessage()
@@ -141,7 +135,11 @@ public class ChatController {
     }
 
     private Flux<ServerSentEvent<String>> streamAgentReply(ChatPreparedContext prepared, ChatRequest request) throws Exception {
-        String userInput = buildUserInput(request.getMessage(), request.getUserId(), prepared.effectiveContext());
+        String userInput = buildUserInput(
+                request.getMessage(),
+                request.getUserId(),
+                resolvedConstraints(prepared.effectiveContext())
+        );
         RunnableConfig runnableConfig = RunnableConfig.builder()
                 .threadId(prepared.sessionId())
                 .addMetadata("user_id", request.getUserId())
@@ -186,14 +184,12 @@ public class ChatController {
             AssistantReplyStreamFilter replyFilter
     ) {
         String rawReply = replyFilter.rawContent();
-        AgentResult agentResult = resolveAgentResult(rawReply, prepared.effectiveContext());
-        String reply = agentResult.assistantReply();
+        String reply = resolveAgentReply(rawReply, prepared.effectiveContext());
 
         sessionStoreService.appendTurns(prepared.sessionId(), prepared.sessionState(), request.getMessage(), reply);
-        LongTermMemoryWriteResult memoryWrite = persistLongTermMemory(
+        LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
                 request.getUserId(),
                 prepared.extractedPatch(),
-                agentResult.memoryPatch(),
                 prepared.effectiveContext(),
                 prepared.profile(),
                 request.getMessage()
@@ -211,20 +207,19 @@ public class ChatController {
         return Flux.just(doneEvent(prepared.sessionId(), reply, debug));
     }
 
-    private AgentResult resolveAgentResult(String rawReply, Map<String, Object> effectiveContext) {
-        AgentResult parsed = parseAgentResult(rawReply);
-        String reply = parsed.assistantReply();
-        if (!isInvalidReply(reply) && !looksLikeJsonEnvelope(reply)) {
+    private String resolveAgentReply(String rawReply, Map<String, Object> effectiveContext) {
+        String parsed = parseAssistantReply(rawReply);
+        if (!isInvalidReply(parsed) && !looksLikeJsonEnvelope(parsed)) {
             return parsed;
         }
         String extracted = AssistantReplyStreamFilter.decodeFull(rawReply);
         if (hasValue(extracted)) {
-            return new AgentResult(extracted, parsed.memoryPatch());
+            return extracted;
         }
-        if (!isInvalidReply(reply) && !looksLikeJsonEnvelope(reply)) {
+        if (!isInvalidReply(parsed) && !looksLikeJsonEnvelope(parsed)) {
             return parsed;
         }
-        return new AgentResult(buildFallbackShoppingReply(effectiveContext), parsed.memoryPatch());
+        return buildFallbackShoppingReply(effectiveContext);
     }
 
     private boolean looksLikeJsonEnvelope(String text) {
@@ -234,7 +229,6 @@ public class ChatController {
         String trimmed = text.trim();
         return trimmed.startsWith("{")
                 && (trimmed.contains("\"assistantReply\"")
-                || trimmed.contains("\"memoryPatch\"")
                 || trimmed.contains("\"reply\""));
     }
 
@@ -321,101 +315,53 @@ public class ChatController {
         }
     }
 
-    private LongTermMemoryWriteResult persistLongTermMemory(
-            String userId,
-            Map<String, Object> extractedPatch,
-            Map<String, Object> agentMemoryPatch,
-            Map<String, Object> effectiveContext,
-            Map<String, Object> existingProfile,
-            String userMessage
-    ) {
-        Map<String, Object> extractionPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
-        Map<String, Object> agentPatch = memoryMergeService.sanitizeAgentPatch(
-                agentMemoryPatch,
-                effectiveContext,
-                extractionPatch,
-                extractedPatch,
-                userMessage
-        );
-        Map<String, Object> sessionPatch = memoryMergeService.deriveSessionPreferencePatch(
-                effectiveContext,
-                extractedPatch,
-                existingProfile,
-                userMessage
-        );
-        Map<String, Object> mergedPatch = memoryMergeService.mergeForProfile(
-                memoryMergeService.mergeForProfile(extractionPatch, agentPatch),
-                sessionPatch
-        );
-        boolean shouldReconcile = ProfileListNormalizer.hasPreferenceIncoming(mergedPatch)
-                || memoryMergeService.sessionContradictsProfile(existingProfile, effectiveContext, userMessage);
-        if (!shouldReconcile) {
-            
-            return new LongTermMemoryWriteResult(extractionPatch, agentPatch, mergedPatch, Map.of(), Map.of());
-        }
-        if (!ProfileListNormalizer.hasPreferenceIncoming(mergedPatch)) {
-            mergedPatch = sessionPatch;
-        }
-        Map<String, Object> reconciledPatch = profileReconcileService.reconcile(
-                existingProfile,
-                mergedPatch,
-                userMessage
-        );
-        memoryClientService.mergePatch(userId, reconciledPatch);
-        return new LongTermMemoryWriteResult(extractionPatch, agentPatch, mergedPatch, reconciledPatch, reconciledPatch);
-    }
-
     private Map<String, Object> buildMemoryDebugMap(
             String toolMode,
             Map<String, Object> extra,
-            LongTermMemoryWriteResult memoryWrite
+            LongTermMemoryWriteService.WriteResult memoryWrite
     ) {
         Map<String, Object> debug = new HashMap<>(extra);
         debug.put("toolMode", toolMode);
         debug.put("memoryPatchFromExtraction", memoryWrite.extractionPatch());
-        debug.put("memoryPatchFromAgent", memoryWrite.agentPatch());
+        debug.put("memoryPatchFromSession", memoryWrite.sessionPatch());
         debug.put("memoryPatchMerged", memoryWrite.mergedPatch());
         debug.put("memoryPatchReconciled", memoryWrite.reconciledPatch());
-        debug.put("profileWritten", memoryWrite.writtenPatch() != null && !memoryWrite.writtenPatch().isEmpty());
+        debug.put("profileWritten", memoryWrite.profileWritten());
         return debug;
     }
 
-    private record LongTermMemoryWriteResult(
-            Map<String, Object> extractionPatch,
-            Map<String, Object> agentPatch,
-            Map<String, Object> mergedPatch,
-            Map<String, Object> reconciledPatch,
-            Map<String, Object> writtenPatch
-    ) {
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> resolvedConstraints(Map<String, Object> effectiveContext) {
+        if (effectiveContext == null) {
+            return Map.of();
+        }
+        Object resolved = effectiveContext.get("resolvedConstraints");
+        if (resolved instanceof Map<?, ?> map) {
+            return (Map<String, Object>) map;
+        }
+        return effectiveContext;
     }
 
-    private String buildUserInput(String message, String userId, Map<String, Object> effectiveContext) {
+    private String buildUserInput(String message, String userId, Map<String, Object> resolvedConstraints) {
         return """
                 请你作为导购咨询子Agent，基于结构化上下文回答。
                 返回严格JSON对象（不要markdown、不要代码块）：
                 {
-                  "assistantReply":"给用户看的自然语言回复",
-                  "memoryPatch":{
-                    "brandPreferences":["string"],
-                    "dislikes":["string"],
-                    "notes":["string"]
-                  }
+                  "assistantReply":"给用户看的自然语言回复"
                 }
                 规则：
-                1. effectiveContext 是主Agent已经整理好的本次咨询上下文，以它为准执行。
-                2. 调用 searchProduct 时必须优先传 effectiveContext.categoryId；仅当 categoryId 为空时才传 categoryRaw。
+                1. resolvedConstraints 是主Agent已经整理好的本次咨询约束，以它为准执行；会话内表达优先于历史画像。
+                2. 调用 searchProduct 时必须优先传 resolvedConstraints.categoryId；仅当 categoryId 为空时才传 categoryRaw。
                 3. 你是推荐执行者，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须调用工具并给出具体推荐。
                 4. 如果预算缺失或用户说“先看看”，按不同价位/常见档位推荐；如果场景缺失，按通用需求假设推荐并说明假设。
                 5. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
                 6. 推荐时必须给出具体款式（名称+大致价格+理由）。
                 7. 如果工具返回当前品类或价格段没有精确命中，要如实说明，并推荐工具给出的其他品类或其他价格段候选。
-                8. memoryPatch 仅包含用户在本轮或 effectiveContext 中已明确表达的稳定长期偏好，允许字段只有 brandPreferences、dislikes、notes。
-                9. 禁止推测用户未说过的品牌、排斥项或长期备注；不要填写 budget、scene；无新增长期偏好时返回空对象 {}。
                                 
                 userId: %s
                 userMessage: %s
-                effectiveContext: %s
-                """.formatted(userId, message, effectiveContext);
+                resolvedConstraints: %s
+                """.formatted(userId, message, resolvedConstraints);
     }
 
     private boolean containsAny(String text, String... words) {
@@ -444,9 +390,9 @@ public class ChatController {
         return "你好，我在。你想买什么品类？可以直接说预算、使用场景和偏好。";
     }
 
-    private AgentResult parseAgentResult(String rawReply) {
+    private String parseAssistantReply(String rawReply) {
         if (rawReply == null || rawReply.isBlank()) {
-            return new AgentResult("", Map.of());
+            return "";
         }
         try {
             Map<String, Object> parsed = objectMapper.readValue(rawReply, new TypeReference<>() {
@@ -458,11 +404,7 @@ public class ChatController {
                     assistantReply = String.valueOf(alt);
                 }
             }
-            Object patch = parsed.get("memoryPatch");
-            Map<String, Object> memoryPatch = patch instanceof Map<?, ?> p
-                    ? (Map<String, Object>) p
-                    : Map.of();
-            return new AgentResult(isInvalidReply(assistantReply) ? rawReply : assistantReply, memoryPatch);
+            return isInvalidReply(assistantReply) ? rawReply : assistantReply;
         } catch (Exception ignored) {
             Matcher matcher = Pattern.compile("\\{[\\s\\S]*\\}").matcher(rawReply);
             if (matcher.find()) {
@@ -471,17 +413,13 @@ public class ChatController {
                     Map<String, Object> parsed = objectMapper.readValue(possibleJson, new TypeReference<>() {
                     });
                     String assistantReply = String.valueOf(parsed.getOrDefault("assistantReply", ""));
-                    Object patch = parsed.get("memoryPatch");
-                    Map<String, Object> memoryPatch = patch instanceof Map<?, ?> p
-                            ? (Map<String, Object>) p
-                            : Map.of();
                     if (!isInvalidReply(assistantReply)) {
-                        return new AgentResult(assistantReply, memoryPatch);
+                        return assistantReply;
                     }
                 } catch (Exception ignoredAgain) {
                 }
             }
-            return new AgentResult(rawReply, Map.of());
+            return rawReply;
         }
     }
 
@@ -694,8 +632,9 @@ public class ChatController {
     }
 
     private String buildFallbackShoppingReply(Map<String, Object> effectiveContext) {
-        Object category = categoryLabel(effectiveContext);
-        Object budget = effectiveContext.get("budget");
+        Map<String, Object> constraints = resolvedConstraints(effectiveContext);
+        Object category = categoryLabel(constraints.isEmpty() ? effectiveContext : constraints);
+        Object budget = constraints.isEmpty() ? effectiveContext.get("budget") : constraints.get("budget");
         if (hasValue(category)) {
             if (hasBudgetValue(budget)) {
                 return "收到，你想买%s，我会基于当前预算、偏好和注意事项继续筛选具体款式。".formatted(category);
@@ -747,8 +686,5 @@ public class ChatController {
             return false;
         }
         return hasValue(budget.get("min")) || hasValue(budget.get("max"));
-    }
-
-    private record AgentResult(String assistantReply, Map<String, Object> memoryPatch) {
     }
 }

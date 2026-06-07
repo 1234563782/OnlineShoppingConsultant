@@ -14,6 +14,12 @@ import java.util.Set;
 @Service
 public class ContextMergeService {
 
+    private final ConstraintResolver constraintResolver;
+
+    public ContextMergeService(ConstraintResolver constraintResolver) {
+        this.constraintResolver = constraintResolver;
+    }
+
     public Map<String, Object> mergeSessionPatch(
             Map<String, Object> currentSessionContext,
             Map<String, Object> extractedPatch
@@ -52,107 +58,15 @@ public class ContextMergeService {
     ) {
         Map<String, Object> session = sessionContext == null ? Map.of() : sessionContext;
         Map<String, Object> effective = new HashMap<>(session);
-        Map<String, Object> profile = longTermProfile == null ? Map.of() : longTermProfile;
-        effective.put("longTermProfileReference", profile);
-
-        if (allowLongTermFallback && !hasBudgetValue(effective.get("budget"))
-                && shouldFallbackScalar(session, "budget")) {
-            Map<String, Object> profileBudget = profileBudget(profile);
-            if (!profileBudget.isEmpty()) {
-                effective.put("budget", profileBudget);
-                effective.put("budgetSource", "long_term_profile");
-            }
-        } else {
-            effective.put("budgetSource", "session_context");
-        }
-
-        if (allowLongTermFallback && !hasValue(effective.get("scene"))
-                && shouldFallbackScalar(session, "scene")) {
-            fillIfMissing(effective, profile, "scene");
-        }
-
-        if (allowLongTermFallback) {
-            applyProfilePreferenceFallback(effective, profile, session);
-        }
-
+        Map<String, Object> resolvedConstraints = constraintResolver.resolve(
+                session,
+                longTermProfile,
+                allowLongTermFallback
+        );
+        effective.put("resolvedConstraints", resolvedConstraints);
         effective.put("longTermFallbackUsed", allowLongTermFallback);
-        effective.put("missingFields", missingFields(effective));
+        effective.put("missingFields", missingFields(effective, resolvedConstraints));
         return effective;
-    }
-
-    /**
-     * Profile preference lists only fill gaps; session mustHave/dislikes always win.
-     */
-    private void applyProfilePreferenceFallback(
-            Map<String, Object> effective,
-            Map<String, Object> profile,
-            Map<String, Object> session
-    ) {
-        List<String> sessionMustHave = normalizeList(session.get("mustHave"));
-        List<String> sessionDislikes = normalizeList(effective.get("dislikes"));
-        List<String> sessionBrands = normalizeList(effective.get("brandPreferences"));
-        List<String> sessionNotes = normalizeList(effective.get("notes"));
-
-        if (!sessionMustHave.isEmpty()) {
-            return;
-        }
-        if (!shouldFallbackPreferences(session)) {
-            return;
-        }
-
-        if (sessionBrands.isEmpty()) {
-            mergeProfileListIfMissing(effective, profile, "brandPreferences");
-        }
-        if (sessionDislikes.isEmpty()) {
-            List<String> profileDislikes = normalizeList(profile.get("dislikes"));
-            List<String> filtered = filterConflictingWithMustHave(profileDislikes, sessionMustHave);
-            if (!filtered.isEmpty()) {
-                effective.put("dislikes", filtered);
-            }
-        }
-        if (sessionNotes.isEmpty()) {
-            mergeProfileListIfMissing(effective, profile, "notes");
-        }
-    }
-
-    private boolean shouldFallbackScalar(Map<String, Object> session, String field) {
-        if ("budget".equals(field) && hasBudgetValue(session.get("budget"))) {
-            return false;
-        }
-        if ("scene".equals(field) && hasValue(session.get("scene"))) {
-            return false;
-        }
-        if (Boolean.TRUE.equals(session.get("userUncertain"))) {
-            return true;
-        }
-        List<String> askedFields = normalizeList(session.get("askedFields"));
-        return askedFields.contains(field);
-    }
-
-    private boolean shouldFallbackPreferences(Map<String, Object> session) {
-        if (Boolean.TRUE.equals(session.get("userUncertain"))) {
-            return true;
-        }
-        return shouldFallbackScalar(session, "budget") || shouldFallbackScalar(session, "scene");
-    }
-
-    private List<String> filterConflictingWithMustHave(List<String> dislikes, List<String> mustHave) {
-        if (dislikes.isEmpty() || mustHave.isEmpty()) {
-            return dislikes;
-        }
-        List<String> result = new ArrayList<>();
-        for (String dislike : dislikes) {
-            boolean conflicts = mustHave.stream().anyMatch(must -> textsOverlap(dislike, must));
-            if (!conflicts) {
-                result.add(dislike);
-            }
-        }
-        return result;
-    }
-
-    private boolean textsOverlap(String left, String right) {
-        return ProfileListNormalizer.containsIgnoreCase(left, right)
-                || ProfileListNormalizer.containsIgnoreCase(right, left);
     }
 
     public Map<String, Object> toMemoryPatch(Map<String, Object> sessionContext) {
@@ -227,12 +141,6 @@ public class ContextMergeService {
                 && !oldCategory.toString().equalsIgnoreCase(newCategory.toString());
     }
 
-    private void fillIfMissing(Map<String, Object> target, Map<String, Object> source, String key) {
-        if (!hasValue(target.get(key)) && hasValue(source.get(key))) {
-            target.put(key, source.get(key));
-        }
-    }
-
     private void mergeStringList(Map<String, Object> target, Map<String, Object> source, String key) {
         List<String> incoming = normalizeList(source == null ? null : source.get(key));
         if (incoming.isEmpty()) {
@@ -241,15 +149,6 @@ public class ContextMergeService {
         Set<String> merged = new LinkedHashSet<>(normalizeList(target.get(key)));
         merged.addAll(incoming);
         target.put(key, new ArrayList<>(merged));
-    }
-
-    private void mergeProfileListIfMissing(Map<String, Object> target, Map<String, Object> profile, String key) {
-        if (normalizeList(target.get(key)).isEmpty()) {
-            List<String> profileValues = normalizeList(profile.get(key));
-            if (!profileValues.isEmpty()) {
-                target.put(key, profileValues);
-            }
-        }
     }
 
     private List<String> normalizeList(Object value) {
@@ -308,21 +207,7 @@ public class ContextMergeService {
         return true;
     }
 
-    private Map<String, Object> profileBudget(Map<String, Object> profile) {
-        Map<String, Object> budget = new HashMap<>();
-        if (profile.get("budgetMin") != null) {
-            budget.put("min", profile.get("budgetMin"));
-        }
-        if (profile.get("budgetMax") != null) {
-            budget.put("max", profile.get("budgetMax"));
-        }
-        if (!budget.isEmpty()) {
-            budget.put("certainty", "FLEXIBLE");
-        }
-        return budget;
-    }
-
-    private List<String> missingFields(Map<String, Object> effective) {
+    private List<String> missingFields(Map<String, Object> effective, Map<String, Object> resolvedConstraints) {
         List<String> missing = new ArrayList<>();
         String categoryResolution = stringValue(effective.get("categoryResolution"));
         boolean hasCategoryId = hasValue(effective.get("categoryId"));
@@ -330,6 +215,8 @@ public class ContextMergeService {
         List<String> askedFields = normalizeList(effective.get("askedFields"));
 
         if (!hasCategoryRaw && !hasCategoryId) {
+            missing.add("category");
+        } else if (CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE.equals(categoryResolution)) {
             missing.add("category");
         } else if (CategoryResolutionResult.STATUS_UNRESOLVED.equals(categoryResolution)) {
             missing.add("category");
@@ -340,10 +227,10 @@ public class ContextMergeService {
             missing.add("category");
         }
 
-        if (!hasBudgetValue(effective.get("budget"))) {
+        if (!hasBudgetValue(resolvedConstraints.get("budget"))) {
             missing.add("budget");
         }
-        if (!hasValue(effective.get("scene"))) {
+        if (!hasValue(resolvedConstraints.get("scene"))) {
             missing.add("scene");
         }
         return missing;

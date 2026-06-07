@@ -28,7 +28,7 @@ public class CategoryController {
                         match.categoryName(),
                         match.categoryRaw(),
                         match.confidence(),
-                        match.confidence() >= 1.0 ? "exact_name" : "alias"
+                        match.matchedBy()
                 ))
                 .orElseGet(() -> CategoryNormalizeResponse.unresolved(raw.trim()));
     }

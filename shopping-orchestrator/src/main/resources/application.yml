@@ -29,7 +29,6 @@ shopping:
   catalog:
     base-url: ${SHOPPING_CATALOG_BASE_URL:http://localhost:8083}
     confidence-threshold: ${SHOPPING_CATALOG_CONFIDENCE_THRESHOLD:0.85}
-    fallback-enabled: ${SHOPPING_CATALOG_FALLBACK_ENABLED:true}
   session:
     ttl-days: 7
     max-turns: 10

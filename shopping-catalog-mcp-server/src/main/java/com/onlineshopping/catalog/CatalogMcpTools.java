@@ -69,7 +69,7 @@ public class CatalogMcpTools {
     private CategoryService.CategoryMatch resolveCategory(String categoryId, String categoryRaw) {
         String normalizedCategoryId = normalizeCategoryId(categoryId);
         if (normalizedCategoryId != null) {
-            return new CategoryService.CategoryMatch(normalizedCategoryId, null, categoryRaw, 1.0);
+            return new CategoryService.CategoryMatch(normalizedCategoryId, null, categoryRaw, 1.0, "category_id");
         }
         return categoryService.normalize(categoryRaw).orElse(null);
     }

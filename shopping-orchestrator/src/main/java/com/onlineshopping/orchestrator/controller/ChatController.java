@@ -1,11 +1,9 @@
 package com.onlineshopping.orchestrator.controller;
 
 import com.alibaba.cloud.ai.graph.CompiledGraph;
-import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.LlmRoutingAgent;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
@@ -17,7 +15,7 @@ import com.onlineshopping.orchestrator.service.ContextMergeService;
 import com.onlineshopping.orchestrator.service.MemoryClientService;
 import com.onlineshopping.orchestrator.service.LongTermMemoryWriteService;
 import com.onlineshopping.orchestrator.service.SessionStoreService;
-import com.onlineshopping.orchestrator.support.AssistantReplyStreamFilter;
+import com.onlineshopping.orchestrator.support.PlainTextStreamBuffer;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
@@ -33,8 +31,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -151,7 +147,7 @@ public class ChatController {
         );
 
         CompiledGraph compiledGraph = supervisorAgent.getAndCompileGraph();
-        AssistantReplyStreamFilter replyFilter = new AssistantReplyStreamFilter();
+        PlainTextStreamBuffer replyBuffer = new PlainTextStreamBuffer();
 
         Flux<ServerSentEvent<String>> tokenFlux = compiledGraph.fluxStream(input, runnableConfig)
                 .concatMap(output -> {
@@ -162,8 +158,8 @@ public class ChatController {
                     if (chunk == null || chunk.isBlank() || "Agent State: submitted".equals(chunk)) {
                         return Flux.empty();
                     }
-                    String delta = replyFilter.append(chunk);
-                    if (delta.isEmpty() || looksLikeJsonEnvelope(delta)) {
+                    String delta = replyBuffer.append(chunk);
+                    if (delta.isEmpty()) {
                         return Flux.empty();
                     }
                     return Flux.just(deltaEvent(delta));
@@ -172,7 +168,7 @@ public class ChatController {
         return Flux.concat(
                 Flux.just(sessionEvent(prepared.sessionId())),
                 tokenFlux,
-                Flux.defer(() -> finalizeAgentStream(prepared, request, replyFilter))
+                Flux.defer(() -> finalizeAgentStream(prepared, request, replyBuffer))
         ).onErrorResume(error -> Flux.just(errorEvent(
                 error.getMessage() == null ? "stream failed" : error.getMessage()
         )));
@@ -181,10 +177,9 @@ public class ChatController {
     private Flux<ServerSentEvent<String>> finalizeAgentStream(
             ChatPreparedContext prepared,
             ChatRequest request,
-            AssistantReplyStreamFilter replyFilter
+            PlainTextStreamBuffer replyBuffer
     ) {
-        String rawReply = replyFilter.rawContent();
-        String reply = resolveAgentReply(rawReply, prepared.effectiveContext());
+        String reply = normalizeAgentReply(replyBuffer.content(), prepared.effectiveContext());
 
         sessionStoreService.appendTurns(prepared.sessionId(), prepared.sessionState(), request.getMessage(), reply);
         LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
@@ -207,29 +202,11 @@ public class ChatController {
         return Flux.just(doneEvent(prepared.sessionId(), reply, debug));
     }
 
-    private String resolveAgentReply(String rawReply, Map<String, Object> effectiveContext) {
-        String parsed = parseAssistantReply(rawReply);
-        if (!isInvalidReply(parsed) && !looksLikeJsonEnvelope(parsed)) {
-            return parsed;
+    private String normalizeAgentReply(String rawReply, Map<String, Object> effectiveContext) {
+        if (rawReply == null || rawReply.isBlank() || isInvalidReply(rawReply)) {
+            return buildFallbackShoppingReply(effectiveContext);
         }
-        String extracted = AssistantReplyStreamFilter.decodeFull(rawReply);
-        if (hasValue(extracted)) {
-            return extracted;
-        }
-        if (!isInvalidReply(parsed) && !looksLikeJsonEnvelope(parsed)) {
-            return parsed;
-        }
-        return buildFallbackShoppingReply(effectiveContext);
-    }
-
-    private boolean looksLikeJsonEnvelope(String text) {
-        if (text == null) {
-            return false;
-        }
-        String trimmed = text.trim();
-        return trimmed.startsWith("{")
-                && (trimmed.contains("\"assistantReply\"")
-                || trimmed.contains("\"reply\""));
+        return rawReply.trim();
     }
 
     private ChatPreparedContext prepareContext(ChatRequest request, String sessionId) {
@@ -345,10 +322,7 @@ public class ChatController {
     private String buildUserInput(String message, String userId, Map<String, Object> resolvedConstraints) {
         return """
                 请你作为导购咨询子Agent，基于结构化上下文回答。
-                返回严格JSON对象（不要markdown、不要代码块）：
-                {
-                  "assistantReply":"给用户看的自然语言回复"
-                }
+                直接输出给用户看的自然语言回复，不要 JSON、不要 markdown、不要代码块。
                 规则：
                 1. resolvedConstraints 是主Agent已经整理好的本次咨询约束，以它为准执行；会话内表达优先于历史画像。
                 2. 调用 searchProduct 时必须优先传 resolvedConstraints.categoryId；仅当 categoryId 为空时才传 categoryRaw。
@@ -388,39 +362,6 @@ public class ChatController {
             return "好的，随时来找我，我可以继续帮你选购。";
         }
         return "你好，我在。你想买什么品类？可以直接说预算、使用场景和偏好。";
-    }
-
-    private String parseAssistantReply(String rawReply) {
-        if (rawReply == null || rawReply.isBlank()) {
-            return "";
-        }
-        try {
-            Map<String, Object> parsed = objectMapper.readValue(rawReply, new TypeReference<>() {
-            });
-            String assistantReply = String.valueOf(parsed.getOrDefault("assistantReply", ""));
-            if (isInvalidReply(assistantReply)) {
-                Object alt = parsed.get("reply");
-                if (alt != null) {
-                    assistantReply = String.valueOf(alt);
-                }
-            }
-            return isInvalidReply(assistantReply) ? rawReply : assistantReply;
-        } catch (Exception ignored) {
-            Matcher matcher = Pattern.compile("\\{[\\s\\S]*\\}").matcher(rawReply);
-            if (matcher.find()) {
-                String possibleJson = matcher.group();
-                try {
-                    Map<String, Object> parsed = objectMapper.readValue(possibleJson, new TypeReference<>() {
-                    });
-                    String assistantReply = String.valueOf(parsed.getOrDefault("assistantReply", ""));
-                    if (!isInvalidReply(assistantReply)) {
-                        return assistantReply;
-                    }
-                } catch (Exception ignoredAgain) {
-                }
-            }
-            return rawReply;
-        }
     }
 
     private void normalizeCategoryRawPatch(

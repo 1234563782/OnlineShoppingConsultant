@@ -64,8 +64,7 @@ agent:
          - alternative_category_same_budget：说明当前目录没有该品类，改推荐同预算内其他品类候选。
          - alternative_category_any_price：说明当前目录没有该品类且预算内无替代，给出其他可选商品供参考。
       6) 如果不是 exact，不要假装精确命中；先用一句话说明原因，再给替代推荐。
-      7) 输出必须是严格JSON对象，不要markdown、不要代码块。
-      8) JSON格式为：{"assistantReply":"..."}
+      7) 直接输出给用户看的自然语言，不要 JSON、不要 markdown、不要代码块。
 
 management:
   endpoints:

@@ -49,13 +49,6 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  function looksLikeJsonEnvelope(text) {
-    if (!text) return false;
-    const trimmed = text.trim();
-    return trimmed.startsWith('{') &&
-      (trimmed.includes('"assistantReply"') || trimmed.includes('"memoryPatch"'));
-  }
-
   function parseSseEvents(buffer) {
     const events = [];
     const parts = buffer.split('\n\n');
@@ -125,7 +118,7 @@
           if (event.type === 'session' && event.sessionId) {
             sid.value = event.sessionId;
           }
-          if (event.type === 'delta' && event.content && !looksLikeJsonEnvelope(event.content)) {
+          if (event.type === 'delta' && event.content) {
             assistantText += event.content;
             assistantEl.textContent = '助手: ' + assistantText;
             log.scrollTop = log.scrollHeight;

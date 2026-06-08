@@ -63,4 +63,4 @@ docker compose up -d
 mysql -u root -p < scripts/init-mysql.sql
 ```
 
-各使用 JPA 的模块已配置 `spring.jpa.hibernate.ddl-auto: none`，仅读写现有表，不会改表结构。
+各使用 MySQL 的模块采用 **MyBatis-Plus** 访问数据库（`mapper` 包 + `BaseMapper`）；表结构由 `scripts/init-mysql.sql` 维护，不会自动建表。

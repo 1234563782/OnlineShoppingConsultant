@@ -1,5 +1,6 @@
 package com.onlineshopping.catalog;
 
+import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.SpringApplication;
@@ -10,6 +11,7 @@ import org.springframework.context.annotation.Bean;
 import com.onlineshopping.catalog.vector.VectorStoreProperties;
 
 @SpringBootApplication
+@MapperScan("com.onlineshopping.catalog.mapper")
 @EnableConfigurationProperties(VectorStoreProperties.class)
 public class CatalogMcpServerApplication {
 

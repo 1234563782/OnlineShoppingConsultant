@@ -1,6 +1,10 @@
 server:
   port: 8086
 
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+
 spring:
   application:
     name: shopping-memory-service
@@ -9,11 +13,6 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: ${SHOPPING_MEMORY_DB_USERNAME:root}
     password: ${SHOPPING_MEMORY_DB_PASSWORD:root}
-  jpa:
-    hibernate:
-      ddl-auto: none
-    show-sql: false
-    database-platform: org.hibernate.dialect.MySQLDialect
 
 management:
   endpoints:

@@ -1,19 +1,15 @@
 package com.onlineshopping.inventory.model;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 
-@Entity
-@Table(name = "product_inventory")
+@TableName("product_inventory")
 public class InventoryEntity {
 
-    @Id
-    @Column(name = "sku_id", nullable = false, length = 32)
+    @TableId(value = "sku_id", type = IdType.INPUT)
     private String skuId;
 
-    @Column(name = "quantity", nullable = false)
     private Integer quantity;
 
     public String getSkuId() {

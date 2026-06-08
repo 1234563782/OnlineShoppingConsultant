@@ -1,7 +1,7 @@
 package com.onlineshopping.catalog.vector;
 
 import com.onlineshopping.catalog.model.ProductEntity;
-import com.onlineshopping.catalog.repo.ProductRepository;
+import com.onlineshopping.catalog.mapper.ProductMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Conditional;
@@ -16,18 +16,18 @@ public class ProductEmbeddingService {
 
     private static final Logger log = LoggerFactory.getLogger(ProductEmbeddingService.class);
 
-    private final ProductRepository productRepository;
+    private final ProductMapper productMapper;
     private final ProductEmbeddingStore embeddingStore;
     private final DashScopeEmbeddingClient embeddingClient;
     private final VectorStoreProperties properties;
 
     public ProductEmbeddingService(
-            ProductRepository productRepository,
+            ProductMapper productMapper,
             ProductEmbeddingStore embeddingStore,
             DashScopeEmbeddingClient embeddingClient,
             VectorStoreProperties properties
     ) {
-        this.productRepository = productRepository;
+        this.productMapper = productMapper;
         this.embeddingStore = embeddingStore;
         this.embeddingClient = embeddingClient;
         this.properties = properties;
@@ -42,7 +42,7 @@ public class ProductEmbeddingService {
             return 0;
         }
         int count = 0;
-        for (ProductEntity p : productRepository.findAll()) {
+        for (ProductEntity p : productMapper.selectList(null)) {
             if (indexOne(p)) {
                 count++;
             }

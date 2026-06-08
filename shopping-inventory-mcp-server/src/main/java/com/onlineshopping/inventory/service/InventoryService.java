@@ -1,7 +1,7 @@
 package com.onlineshopping.inventory.service;
 
+import com.onlineshopping.inventory.mapper.InventoryMapper;
 import com.onlineshopping.inventory.model.InventoryEntity;
-import com.onlineshopping.inventory.repo.InventoryRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
@@ -9,13 +9,13 @@ import java.util.Optional;
 @Service
 public class InventoryService {
 
-    private final InventoryRepository inventoryRepository;
+    private final InventoryMapper inventoryMapper;
 
-    public InventoryService(InventoryRepository inventoryRepository) {
-        this.inventoryRepository = inventoryRepository;
+    public InventoryService(InventoryMapper inventoryMapper) {
+        this.inventoryMapper = inventoryMapper;
     }
 
     public Optional<InventoryEntity> findBySkuId(String skuId) {
-        return inventoryRepository.findById(skuId);
+        return Optional.ofNullable(inventoryMapper.selectById(skuId));
     }
 }

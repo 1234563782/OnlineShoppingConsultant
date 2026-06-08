@@ -3,8 +3,8 @@ package com.onlineshopping.memory.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.onlineshopping.memory.dto.MemoryResponse;
+import com.onlineshopping.memory.mapper.UserMemoryMapper;
 import com.onlineshopping.memory.model.UserMemoryEntity;
-import com.onlineshopping.memory.repo.UserMemoryRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -30,45 +30,54 @@ public class UserMemoryService {
 
     private static final String RECONCILE_REPLACE_KEY = "_reconcileReplace";
 
-    private final UserMemoryRepository repository;
+    private final UserMemoryMapper userMemoryMapper;
     private final ObjectMapper objectMapper;
 
-    public UserMemoryService(UserMemoryRepository repository, ObjectMapper objectMapper) {
-        this.repository = repository;
+    public UserMemoryService(UserMemoryMapper userMemoryMapper, ObjectMapper objectMapper) {
+        this.userMemoryMapper = userMemoryMapper;
         this.objectMapper = objectMapper;
     }
 
     public MemoryResponse getByUserId(String userId) {
-        UserMemoryEntity entity = repository.findById(userId)
-                .orElseGet(() -> {
-                    UserMemoryEntity empty = new UserMemoryEntity();
-                    empty.setUserId(userId);
-                    empty.setProfileJson("{}");
-                    empty.setSummaryMd("");
-                    return empty;
-                });
+        UserMemoryEntity entity = userMemoryMapper.selectById(userId);
+        if (entity == null) {
+            UserMemoryEntity empty = new UserMemoryEntity();
+            empty.setUserId(userId);
+            empty.setProfileJson("{}");
+            empty.setSummaryMd("");
+            return toResponse(empty);
+        }
         return toResponse(entity);
     }
 
     public MemoryResponse mergeUpdate(String userId, Map<String, Object> patch) {
-        UserMemoryEntity entity = repository.findById(userId).orElseGet(() -> {
-            UserMemoryEntity created = new UserMemoryEntity();
-            created.setUserId(userId);
-            created.setProfileJson("{}");
-            created.setSummaryMd("");
-            return created;
-        });
+        UserMemoryEntity entity = userMemoryMapper.selectById(userId);
+        boolean isNew = entity == null;
+        if (isNew) {
+            entity = new UserMemoryEntity();
+            entity.setUserId(userId);
+            entity.setProfileJson("{}");
+            entity.setSummaryMd("");
+        }
         Map<String, Object> current = parseJsonMap(entity.getProfileJson());
         Map<String, Object> merged = merge(current, patch);
         merged.put("lastUpdatedAt", Instant.now().toString());
         entity.setProfileJson(writeJson(merged));
         entity.setSummaryMd(buildSummary(merged));
-        UserMemoryEntity saved = repository.save(entity);
-        return toResponse(saved);
+        Instant now = Instant.now();
+        if (isNew) {
+            entity.setCreatedAt(now);
+            entity.setUpdatedAt(now);
+            userMemoryMapper.insert(entity);
+        } else {
+            entity.setUpdatedAt(now);
+            userMemoryMapper.updateById(entity);
+        }
+        return toResponse(entity);
     }
 
     public void deleteByUserId(String userId) {
-        repository.deleteById(userId);
+        userMemoryMapper.deleteById(userId);
     }
 
     private MemoryResponse toResponse(UserMemoryEntity entity) {

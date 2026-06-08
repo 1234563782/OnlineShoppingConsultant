@@ -1,7 +1,8 @@
 package com.onlineshopping.promotion.service;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.onlineshopping.promotion.mapper.PromotionMapper;
 import com.onlineshopping.promotion.model.PromotionEntity;
-import com.onlineshopping.promotion.repo.PromotionRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -9,13 +10,14 @@ import java.util.List;
 @Service
 public class PromotionService {
 
-    private final PromotionRepository promotionRepository;
+    private final PromotionMapper promotionMapper;
 
-    public PromotionService(PromotionRepository promotionRepository) {
-        this.promotionRepository = promotionRepository;
+    public PromotionService(PromotionMapper promotionMapper) {
+        this.promotionMapper = promotionMapper;
     }
 
     public List<PromotionEntity> findBySkuId(String skuId) {
-        return promotionRepository.findBySkuId(skuId);
+        return promotionMapper.selectList(
+                Wrappers.<PromotionEntity>lambdaQuery().eq(PromotionEntity::getSkuId, skuId));
     }
 }

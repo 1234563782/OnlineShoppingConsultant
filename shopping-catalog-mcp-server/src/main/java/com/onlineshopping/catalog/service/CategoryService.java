@@ -1,7 +1,8 @@
 package com.onlineshopping.catalog.service;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.onlineshopping.catalog.mapper.CategoryMapper;
 import com.onlineshopping.catalog.model.CategoryEntity;
-import com.onlineshopping.catalog.repo.CategoryRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.Arrays;
@@ -13,10 +14,10 @@ public class CategoryService {
 
     private static final double MIN_MATCH_SCORE = 40.0;
 
-    private final CategoryRepository categoryRepository;
+    private final CategoryMapper categoryMapper;
 
-    public CategoryService(CategoryRepository categoryRepository) {
-        this.categoryRepository = categoryRepository;
+    public CategoryService(CategoryMapper categoryMapper) {
+        this.categoryMapper = categoryMapper;
     }
 
     public Optional<CategoryMatch> normalize(String categoryRaw) {
@@ -27,7 +28,8 @@ public class CategoryService {
 
         CategoryMatch best = null;
         double bestScore = 0.0;
-        for (CategoryEntity category : categoryRepository.findByEnabledTrue()) {
+        for (CategoryEntity category : categoryMapper.selectList(
+                Wrappers.<CategoryEntity>lambdaQuery().eq(CategoryEntity::getEnabled, true))) {
             ScoredMatch scored = scoreMatch(raw, category);
             if (scored.score() > bestScore) {
                 bestScore = scored.score();

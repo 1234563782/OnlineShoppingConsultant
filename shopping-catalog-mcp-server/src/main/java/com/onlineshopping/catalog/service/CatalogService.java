@@ -1,8 +1,7 @@
 package com.onlineshopping.catalog.service;
 
+import com.onlineshopping.catalog.mapper.ProductMapper;
 import com.onlineshopping.catalog.model.ProductEntity;
-import com.onlineshopping.catalog.repo.ProductRepository;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -16,26 +15,26 @@ import java.util.stream.Collectors;
 @Service
 public class CatalogService {
 
-    private final ProductRepository productRepository;
+    private final ProductMapper productMapper;
 
-    public CatalogService(ProductRepository productRepository) {
-        this.productRepository = productRepository;
+    public CatalogService(ProductMapper productMapper) {
+        this.productMapper = productMapper;
     }
 
     public List<ProductEntity> search(String categoryId, String keyword, Double minPrice, Double maxPrice, int limit) {
         String raw = keyword == null ? "" : keyword.trim().toLowerCase(Locale.ROOT);
         String kw = raw.isBlank() ? "" : raw.replace("%", "").replace("_", "");
-        return productRepository.searchByFilters(
+        return productMapper.searchByFilters(
                 normalizeCategoryId(categoryId),
                 kw,
                 minPrice,
                 maxPrice,
-                PageRequest.of(0, limit)
+                limit
         );
     }
 
     public Optional<ProductEntity> findBySkuId(String skuId) {
-        return productRepository.findById(skuId);
+        return Optional.ofNullable(productMapper.selectById(skuId));
     }
 
     /**
@@ -45,7 +44,7 @@ public class CatalogService {
         if (skuIds == null || skuIds.isEmpty()) {
             return List.of();
         }
-        Map<String, ProductEntity> byId = productRepository.findAllById(skuIds).stream()
+        Map<String, ProductEntity> byId = productMapper.selectBatchIds(skuIds).stream()
                 .collect(Collectors.toMap(ProductEntity::getSkuId, Function.identity(), (a, b) -> a));
         List<ProductEntity> ordered = new ArrayList<>();
         for (String id : skuIds) {

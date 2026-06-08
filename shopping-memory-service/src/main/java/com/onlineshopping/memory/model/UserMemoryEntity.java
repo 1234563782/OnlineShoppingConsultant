@@ -1,45 +1,29 @@
 package com.onlineshopping.memory.model;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.PrePersist;
-import jakarta.persistence.PreUpdate;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 
 import java.time.Instant;
 
-@Entity
-@Table(name = "user_memory")
+@TableName("user_memory")
 public class UserMemoryEntity {
 
-    @Id
-    @Column(name = "user_id", nullable = false, updatable = false, length = 128)
+    @TableId(value = "user_id", type = IdType.INPUT)
     private String userId;
 
-    @Column(name = "profile_json", columnDefinition = "longtext")
+    @TableField("profile_json")
     private String profileJson;
 
-    @Column(name = "summary_md", columnDefinition = "longtext")
+    @TableField("summary_md")
     private String summaryMd;
 
-    @Column(name = "created_at", nullable = false)
+    @TableField("created_at")
     private Instant createdAt;
 
-    @Column(name = "updated_at", nullable = false)
+    @TableField("updated_at")
     private Instant updatedAt;
-
-    @PrePersist
-    public void prePersist() {
-        Instant now = Instant.now();
-        this.createdAt = now;
-        this.updatedAt = now;
-    }
-
-    @PreUpdate
-    public void preUpdate() {
-        this.updatedAt = Instant.now();
-    }
 
     public String getUserId() {
         return userId;
@@ -69,7 +53,15 @@ public class UserMemoryEntity {
         return createdAt;
     }
 
+    public void setCreatedAt(Instant createdAt) {
+        this.createdAt = createdAt;
+    }
+
     public Instant getUpdatedAt() {
         return updatedAt;
+    }
+
+    public void setUpdatedAt(Instant updatedAt) {
+        this.updatedAt = updatedAt;
     }
 }

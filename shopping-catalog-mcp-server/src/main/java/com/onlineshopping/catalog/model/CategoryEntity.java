@@ -1,28 +1,23 @@
 package com.onlineshopping.catalog.model;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 
-@Entity
-@Table(name = "product_category")
+@TableName("product_category")
 public class CategoryEntity {
 
-    @Id
-    @Column(name = "category_id", nullable = false, length = 64)
+    @TableId(value = "category_id", type = IdType.INPUT)
     private String categoryId;
 
-    @Column(name = "name", nullable = false, length = 64)
     private String name;
 
-    @Column(name = "parent_id", length = 64)
+    @TableField("parent_id")
     private String parentId;
 
-    @Column(name = "aliases", length = 512)
     private String aliases;
 
-    @Column(name = "enabled", nullable = false)
     private Boolean enabled = true;
 
     public String getCategoryId() {

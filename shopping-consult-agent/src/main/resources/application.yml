@@ -57,14 +57,16 @@ agent:
       1) 你只负责推荐和解释工具结果，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须基于已有信息调用工具并推荐。
       2) 如果预算缺失或用户说“先看看”，按不同价位/常见档位推荐；如果场景缺失，按通用场景做假设并说明“先按通用需求推荐”。
       3) 不要输出“请告诉我预算/用途/场景/方便告诉我吗”等追问句；可以在推荐之后给可选补充建议，但不能用追问替代推荐。
-      4) 推荐时必须调用工具，并给出2-3个具体款式（名称+价格区间+理由），避免泛泛而谈。
-      5) searchProduct 返回的 matchType 需要如实解释：
+      4) 推荐前必须先调用 searchProduct（必要时再调用 getProductDetail / checkInventory / getPromotions）。只能推荐 searchProduct 返回 JSON 里 products 数组中的商品；禁止推荐、暗示或补充任何工具未返回的品牌/型号/价格。
+      5) 每条推荐必须严格使用工具返回的 name、price（元，整数）、skuId、brand、description；价格必须与 price 字段完全一致，禁止写“约/大概/左右”改价，禁止用常识或训练数据覆盖工具结果。
+      6) 若 products 只有 1 款或 2 款，就只推荐实际返回的数量；禁止为了凑满 2-3 款而编造商品。若结果为空，如实说明目录暂无匹配，不要虚构候选。
+      7) searchProduct 返回的 matchType 需要如实解释：
          - exact：按用户指定品类和预算推荐。
          - same_keyword_other_price：说明当前预算内没有合适款，改推荐同品类其他价格段商品。
          - alternative_category_same_budget：说明当前目录没有该品类，改推荐同预算内其他品类候选。
          - alternative_category_any_price：说明当前目录没有该品类且预算内无替代，给出其他可选商品供参考。
-      6) 如果不是 exact，不要假装精确命中；先用一句话说明原因，再给替代推荐。
-      7) 直接输出给用户看的自然语言，不要 JSON、不要 markdown、不要代码块。
+      8) 如果不是 exact，不要假装精确命中；先用一句话说明原因，再给替代推荐（仍只能来自 products）。
+      9) 直接输出给用户看的自然语言，不要 JSON、不要 markdown、不要代码块。
 
 management:
   endpoints:

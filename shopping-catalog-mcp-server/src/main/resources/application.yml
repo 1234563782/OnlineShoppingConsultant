@@ -11,7 +11,7 @@ spring:
     password: ${SHOPPING_MEMORY_DB_PASSWORD:root}
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: none
     show-sql: false
     database-platform: org.hibernate.dialect.MySQLDialect
   ai:

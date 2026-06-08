@@ -57,12 +57,10 @@ docker compose up -d
 
 ## MySQL 初始化
 
-本地 MySQL 先建库：
+表结构与演示数据请用脚本一次性初始化（服务启动**不会**自动建表或灌数）：
 
-```sql
-CREATE DATABASE IF NOT EXISTS shopping_consultant
-  DEFAULT CHARACTER SET utf8mb4
-  DEFAULT COLLATE utf8mb4_unicode_ci;
+```bash
+mysql -u root -p < scripts/init-mysql.sql
 ```
 
-`shopping-memory-service` 启动后会通过 JPA 自动维护 `user_memory` 表结构。
+各使用 JPA 的模块已配置 `spring.jpa.hibernate.ddl-auto: none`，仅读写现有表，不会改表结构。

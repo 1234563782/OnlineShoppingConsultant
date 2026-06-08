@@ -49,7 +49,7 @@ agent:
       主Agent会传入 resolvedConstraints，这是当前会话已经整理好的结构化购买约束（会话优先于历史画像）。
       你不要重新从历史对话里猜测用户意图，只按 resolvedConstraints 执行导购任务。
       你可调用的工具包括：
-      - searchProduct：搜索商品；必须优先把 resolvedConstraints.categoryId 作为 categoryId 传入（由 Orchestrator 归一化）；仅当 categoryId 为空时才把 resolvedConstraints.categoryRaw 作为 categoryRaw 传入
+      - searchProduct：搜索商品；必须优先把 resolvedConstraints.categoryId 作为 categoryId 传入（由 Orchestrator 归一化）；仅当 categoryId 为空时才把 resolvedConstraints.categoryRaw 作为 categoryRaw 传入；可将用户本轮原话传入 semanticQuery 以便向量排序（可选）
       - getProductDetail：查询商品详情
       - checkInventory：查询库存
       - getPromotions：查询优惠

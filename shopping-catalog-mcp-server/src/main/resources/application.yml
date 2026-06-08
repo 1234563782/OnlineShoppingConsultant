@@ -30,6 +30,18 @@ spring:
           register:
             enabled: ${NACOS_REGISTER_ENABLED:true}
 
+# Optional: PostgreSQL + pgvector（商品语义索引）；密码等用环境变量，勿写明文
+shopping:
+  vector:
+    enabled: ${SHOPPING_VECTOR_ENABLED:true}
+    jdbc-url: ${SHOPPING_VECTOR_JDBC_URL:jdbc:postgresql://localhost:5432/postgres}
+    username: ${SHOPPING_VECTOR_DB_USERNAME:postgres}
+    password: ${SHOPPING_VECTOR_DB_PASSWORD:}
+    embedding-model: ${SHOPPING_VECTOR_EMBEDDING_MODEL:text-embedding-v2}
+    embedding-dimensions: ${SHOPPING_VECTOR_EMBEDDING_DIMENSIONS:1536}
+    # 开启后暴露 POST /api/v1/catalog/product-embeddings/rebuild（仅内网/开发）
+    admin-rebuild-enabled: ${SHOPPING_VECTOR_ADMIN_REBUILD_ENABLED:true}
+
 management:
   endpoints:
     web:

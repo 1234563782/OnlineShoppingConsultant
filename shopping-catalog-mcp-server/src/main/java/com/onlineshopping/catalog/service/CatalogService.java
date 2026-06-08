@@ -5,9 +5,13 @@ import com.onlineshopping.catalog.repo.ProductRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 public class CatalogService {
@@ -32,6 +36,25 @@ public class CatalogService {
 
     public Optional<ProductEntity> findBySkuId(String skuId) {
         return productRepository.findById(skuId);
+    }
+
+    /**
+     * Load products by sku id list preserving the given order (for vector search results).
+     */
+    public List<ProductEntity> findBySkuIdsPreserveOrder(List<String> skuIds) {
+        if (skuIds == null || skuIds.isEmpty()) {
+            return List.of();
+        }
+        Map<String, ProductEntity> byId = productRepository.findAllById(skuIds).stream()
+                .collect(Collectors.toMap(ProductEntity::getSkuId, Function.identity(), (a, b) -> a));
+        List<ProductEntity> ordered = new ArrayList<>();
+        for (String id : skuIds) {
+            ProductEntity p = byId.get(id);
+            if (p != null) {
+                ordered.add(p);
+            }
+        }
+        return ordered;
     }
 
     private String normalizeCategoryId(String categoryId) {

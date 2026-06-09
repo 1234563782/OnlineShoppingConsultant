@@ -1,5 +1,7 @@
 # Architecture
 
+> 延伸阅读：[Open-ClaudeCode 高价值借鉴指南](./OPEN_CLAUDECODE_BORROWINGS.md) · [品类槽位改造](./CATEGORY_SLOT_REFACTOR.md) · [项目演进](./EVOLUTION.md)
+
 ## Service Topology
 
 - `shopping-orchestrator` (8087): chat API, Web UI, Redis session store, A2A client discovery.

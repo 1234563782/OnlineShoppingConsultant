@@ -33,6 +33,12 @@ public class ContextExtractionService {
                 如果用户明显不是购物相关，intentType=non_shopping。
                 如果用户有购买/选购/对比/推荐诉求，intentType=shopping。
 
+                品类切换规则（非常重要）：
+                - 若用户本轮明确说出与「已有会话上下文」中不同的商品/品类（例如之前是电脑，本轮说手机、换手机、不要电脑了推荐手机），
+                  必须输出新的 categoryRaw，视为替换旧品类，不要返回 null。
+                - 「推荐X」「想买X」「X有什么推荐」「换成X」中的 X 若与当前品类不同，必须写入 categoryRaw。
+                - 仅当用户完全未提及任何品类/商品时，categoryRaw 才为 null。
+
                 JSON schema:
                 {
                   "intentType":"shopping|small_talk|non_shopping",
@@ -91,6 +97,7 @@ public class ContextExtractionService {
                 - 如果用户回答了 pendingField，answeredPendingField=true，并提取对应字段。
                 - 如果用户没回答 pendingField，answeredPendingField=false，对应字段返回 null。
                 - 即使没回答 pendingField，也要抽取本轮明确表达的其它有效购物信息，如预算、换品类、品牌偏好、排斥项。
+                - 若用户本轮明确换品类（与已有会话上下文不同），必须输出新的 categoryRaw，视为替换旧品类。
                 - 如果用户表示“不确定/先看看/随便/都可以”，userUncertain=true，shouldKeepPending=false。
                 - 如果用户答非所问但仍在购物上下文，shouldKeepPending=true。
                 - 如果用户只是寒暄，intentType=small_talk，answeredPendingField=false，shouldKeepPending=true。

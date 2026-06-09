@@ -10,17 +10,18 @@ import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
 import com.onlineshopping.orchestrator.dto.ChatRequest;
 import com.onlineshopping.orchestrator.dto.SessionState;
-import com.onlineshopping.orchestrator.service.CategoryResolutionService;
-import com.onlineshopping.orchestrator.service.ContextExtractionService;
-import com.onlineshopping.orchestrator.service.ContextMergeService;
-import com.onlineshopping.orchestrator.service.MemoryClientService;
+import com.onlineshopping.orchestrator.dto.SessionProcessResult;
 import com.onlineshopping.orchestrator.service.LongTermMemoryWriteService;
+import com.onlineshopping.orchestrator.service.MemoryClientService;
+import com.onlineshopping.orchestrator.service.SessionStateMachine;
 import com.onlineshopping.orchestrator.service.SessionStoreService;
 import com.onlineshopping.orchestrator.support.PlainTextStreamBuffer;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -37,32 +38,28 @@ import java.util.UUID;
 @RequestMapping("/api/v1")
 public class ChatController {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatController.class);
+
     private final LlmRoutingAgent supervisorAgent;
     private final SessionStoreService sessionStoreService;
     private final MemoryClientService memoryClientService;
-    private final ContextExtractionService contextExtractionService;
-    private final ContextMergeService contextMergeService;
+    private final SessionStateMachine sessionStateMachine;
     private final LongTermMemoryWriteService longTermMemoryWriteService;
-    private final CategoryResolutionService categoryResolutionService;
     private final ObjectMapper objectMapper;
 
     public ChatController(
             @Qualifier("supervisorAgentBean") LlmRoutingAgent supervisorAgent,
             SessionStoreService sessionStoreService,
             MemoryClientService memoryClientService,
-            ContextExtractionService contextExtractionService,
-            ContextMergeService contextMergeService,
+            SessionStateMachine sessionStateMachine,
             LongTermMemoryWriteService longTermMemoryWriteService,
-            CategoryResolutionService categoryResolutionService,
             ObjectMapper objectMapper
     ) {
         this.supervisorAgent = supervisorAgent;
         this.sessionStoreService = sessionStoreService;
         this.memoryClientService = memoryClientService;
-        this.contextExtractionService = contextExtractionService;
-        this.contextMergeService = contextMergeService;
+        this.sessionStateMachine = sessionStateMachine;
         this.longTermMemoryWriteService = longTermMemoryWriteService;
-        this.categoryResolutionService = categoryResolutionService;
         this.objectMapper = objectMapper;
     }
 
@@ -106,7 +103,8 @@ public class ChatController {
                             Map.of(
                                     "sessionContext", prepared.sessionContext(),
                                     "effectiveContext", prepared.effectiveContext(),
-                                    "categoryResolution", prepared.categoryResolution().toDebugMap()
+                                    "categoryResolution", prepared.categoryResolution().toDebugMap(),
+                                    "stateDebug", prepared.stateDebug()
                             ),
                             memoryWrite
                     );
@@ -139,7 +137,7 @@ public class ChatController {
                 resolvedConstraints(prepared.effectiveContext())
         );
         RunnableConfig runnableConfig = RunnableConfig.builder()
-                .threadId(prepared.sessionId())
+                .threadId(agentThreadId(prepared))
                 .addMetadata("user_id", prepared.userId())
                 .build();
         Map<String, Object> input = Map.of(
@@ -170,7 +168,7 @@ public class ChatController {
         return Flux.concat(
                 Flux.just(sessionEvent(prepared.sessionId())),
                 tokenFlux,
-                Flux.defer(() -> finalizeAgentStream(prepared, request, replyBuffer))
+                finalizeAgentStream(prepared, request, replyBuffer)
         ).onErrorResume(error -> Flux.just(errorEvent(
                 error.getMessage() == null ? "stream failed" : error.getMessage()
         )));
@@ -181,27 +179,51 @@ public class ChatController {
             ChatRequest request,
             PlainTextStreamBuffer replyBuffer
     ) {
-        String reply = normalizeAgentReply(replyBuffer.content(), prepared.effectiveContext());
-
-        sessionStoreService.appendTurns(prepared.userId(), prepared.sessionId(), prepared.sessionState(), request.getMessage(), reply);
-        LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
-                prepared.userId(),
-                prepared.extractedPatch(),
-                prepared.effectiveContext(),
-                prepared.profile(),
-                request.getMessage()
-        );
-        Map<String, Object> debug = buildMemoryDebugMap(
-                "a2a+nacos",
-                Map.of(
-                        "memoryProfile", prepared.profile(),
-                        "sessionContext", prepared.sessionContext(),
-                        "effectiveContext", prepared.effectiveContext(),
-                        "categoryResolution", prepared.categoryResolution().toDebugMap()
-                ),
-                memoryWrite
-        );
-        return Flux.just(doneEvent(prepared.sessionId(), reply, debug));
+        return Flux.defer(() -> {
+            String buffered = replyBuffer.content();
+            String reply = normalizeAgentReply(buffered, prepared.effectiveContext());
+            try {
+                sessionStoreService.appendTurns(
+                        prepared.userId(),
+                        prepared.sessionId(),
+                        prepared.sessionState(),
+                        request.getMessage(),
+                        reply
+                );
+                LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
+                        prepared.userId(),
+                        prepared.extractedPatch(),
+                        prepared.effectiveContext(),
+                        prepared.profile(),
+                        request.getMessage()
+                );
+                Map<String, Object> debug = buildMemoryDebugMap(
+                        "a2a+nacos",
+                        Map.of(
+                                "memoryProfile", prepared.profile(),
+                                "sessionContext", prepared.sessionContext(),
+                                "effectiveContext", prepared.effectiveContext(),
+                                "categoryResolution", prepared.categoryResolution().toDebugMap(),
+                                "stateDebug", prepared.stateDebug()
+                        ),
+                        memoryWrite
+                );
+                return Flux.just(doneEvent(prepared.sessionId(), reply, debug));
+            } catch (Exception e) {
+                log.error(
+                        "Chat finalize failed after stream (sessionId={}); client already received deltas.",
+                        prepared.sessionId(),
+                        e
+                );
+                Map<String, Object> safeDebug = new HashMap<>();
+                safeDebug.put("streamFinalizeError", e.getClass().getSimpleName());
+                safeDebug.put(
+                        "streamFinalizeMessage",
+                        e.getMessage() == null ? "" : e.getMessage()
+                );
+                return Flux.just(doneEvent(prepared.sessionId(), reply, safeDebug));
+            }
+        });
     }
 
     private String normalizeAgentReply(String rawReply, Map<String, Object> effectiveContext) {
@@ -214,42 +236,23 @@ public class ChatController {
     private ChatPreparedContext prepareContext(String userId, ChatRequest request, String sessionId) {
         SessionState sessionState = sessionStoreService.getSession(userId, sessionId);
         Map<String, Object> profile = memoryClientService.getProfile(userId);
-        Map<String, Object> currentSessionContext = sessionState.getSessionContext();
-        String pendingField = pendingField(currentSessionContext);
-        Map<String, Object> extractedPatch = pendingField == null
-                ? contextExtractionService.extractPatch(request.getMessage(), currentSessionContext)
-                : contextExtractionService.extractPendingFieldPatch(
-                pendingField, request.getMessage(), currentSessionContext);
-        normalizeCategoryRawPatch(request.getMessage(), sessionState.getSessionContext(), extractedPatch);
-        Map<String, Object> sessionContext = contextMergeService.mergeSessionPatch(
+        SessionProcessResult processed = sessionStateMachine.process(
+                request.getMessage(),
                 sessionState.getSessionContext(),
-                extractedPatch
+                profile
         );
-        applyPendingFieldResult(sessionContext, pendingField, extractedPatch, request.getMessage());
-        applyCategoryConfirmation(request.getMessage(), pendingField, sessionContext);
-        CategoryResolutionResult categoryResolution = categoryResolutionService.resolve(sessionContext);
-        boolean allowLongTermFallback = true;
-        Map<String, Object> effectiveContext = contextMergeService.buildEffectiveContext(
-                sessionContext,
-                profile,
-                allowLongTermFallback
-        );
-        effectiveContext.put("categoryResolution", sessionContext.getOrDefault("categoryResolution", CategoryResolutionResult.STATUS_SKIPPED));
-        if (sessionContext.get("categoryConfidence") != null) {
-            effectiveContext.put("categoryConfidence", sessionContext.get("categoryConfidence"));
-        }
-        sessionState.setSessionContext(sessionContext);
-        String intentType = String.valueOf(effectiveContext.getOrDefault("intentType", "shopping"));
+        sessionState.setSessionContext(processed.sessionContext());
         return new ChatPreparedContext(
                 userId,
                 sessionId,
                 sessionState,
                 profile,
-                extractedPatch,
-                sessionContext,
-                effectiveContext,
-                intentType,
-                categoryResolution
+                processed.extractedPatch(),
+                processed.sessionContext(),
+                processed.effectiveContext(),
+                processed.intentType(),
+                processed.categoryResolution(),
+                processed.stateDebug()
         );
     }
 
@@ -307,7 +310,15 @@ public class ChatController {
         debug.put("memoryPatchMerged", memoryWrite.mergedPatch());
         debug.put("memoryPatchReconciled", memoryWrite.reconciledPatch());
         debug.put("profileWritten", memoryWrite.profileWritten());
+        if (extra.containsKey("stateDebug")) {
+            debug.put("stateDebug", extra.get("stateDebug"));
+        }
         return debug;
+    }
+
+    private String agentThreadId(ChatPreparedContext prepared) {
+        int turnCount = prepared.sessionState().getTurns() == null ? 0 : prepared.sessionState().getTurns().size();
+        return prepared.sessionId() + ":turn:" + turnCount;
     }
 
     @SuppressWarnings("unchecked")
@@ -329,12 +340,13 @@ public class ChatController {
                 规则：
                 1. resolvedConstraints 是主Agent已经整理好的本次咨询约束，以它为准执行；会话内表达优先于历史画像。
                 2. 调用 searchProduct 时必须优先传 resolvedConstraints.categoryId；仅当 categoryId 为空时才传 categoryRaw。
-                3. 你是推荐执行者，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须调用工具并给出具体推荐。
-                4. 如果预算缺失或用户说“先看看”，按不同价位/常见档位推荐；如果场景缺失，按通用需求假设推荐并说明假设。
-                5. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
-                6. 只能推荐 searchProduct 返回 JSON 中 products 里的商品；名称、价格必须与工具字段完全一致，禁止编造未返回的型号或改写价格（禁止“约/大概”）。
-                7. 若 products 不足 3 款，只推荐实际返回的数量，禁止凑数编造。
-                8. 如果工具返回当前品类或价格段没有精确命中，要如实说明，并推荐工具给出的其他品类或其他价格段候选（仍只能来自 products）。
+                3. 若 userMessage 明确表达与上一轮不同的品类，必须以 resolvedConstraints 中的最新 categoryId 重新调用 searchProduct，禁止沿用上一轮品类结果。
+                4. 你是推荐执行者，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须调用工具并给出具体推荐。
+                5. 如果预算缺失或用户说“先看看”，按不同价位/常见档位推荐；如果场景缺失，按通用需求假设推荐并说明假设。
+                6. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
+                7. 只能推荐 searchProduct 返回 JSON 中 products 里的商品；名称、价格必须与工具字段完全一致，禁止编造未返回的型号或改写价格（禁止“约/大概”）。
+                8. 若 products 不足 3 款，只推荐实际返回的数量，禁止凑数编造。
+                9. 如果工具返回当前品类或价格段没有精确命中，要如实说明，并推荐工具给出的其他品类或其他价格段候选（仍只能来自 products）。
                                 
                 userId: %s
                 userMessage: %s
@@ -366,47 +378,6 @@ public class ChatController {
             return "好的，随时来找我，我可以继续帮你选购。";
         }
         return "你好，我在。你想买什么品类？可以直接说预算、使用场景和偏好。";
-    }
-
-    private void normalizeCategoryRawPatch(
-            String userMessage,
-            Map<String, Object> currentSessionContext,
-            Map<String, Object> extractedPatch
-    ) {
-        if (extractedPatch == null) {
-            return;
-        }
-        if (!hasValue(extractedPatch.get("categoryRaw")) && hasValue(extractedPatch.get("category"))) {
-            extractedPatch.put("categoryRaw", extractedPatch.get("category"));
-        }
-        extractedPatch.remove("category");
-        if (!hasValue(extractedPatch.get("categoryRaw")) && hasValue(extractedPatch.get("categoryName"))) {
-            extractedPatch.put("categoryRaw", extractedPatch.get("categoryName"));
-        }
-        extractedPatch.remove("categoryId");
-        extractedPatch.remove("categoryName");
-
-        Object extractedCategoryRaw = extractedPatch.get("categoryRaw");
-        if (!hasValue(extractedCategoryRaw)) {
-            return;
-        }
-        String raw = extractedCategoryRaw.toString().trim();
-        if (containsIgnoreCase(userMessage, raw)) {
-            extractedPatch.put("intentType", "shopping");
-            return;
-        }
-        Object currentCategoryRaw = categoryLabel(currentSessionContext);
-        if (hasValue(currentCategoryRaw)
-                && !currentCategoryRaw.toString().equalsIgnoreCase(raw)) {
-            extractedPatch.remove("categoryRaw");
-        }
-    }
-
-    private boolean containsIgnoreCase(String text, String needle) {
-        return text != null
-                && needle != null
-                && !needle.isBlank()
-                && text.toLowerCase(java.util.Locale.ROOT).contains(needle.toLowerCase(java.util.Locale.ROOT));
     }
 
     private boolean isInvalidReply(String reply) {
@@ -458,65 +429,6 @@ public class ChatController {
                     .formatted(category);
         }
         return null;
-    }
-
-    private String pendingField(Map<String, Object> sessionContext) {
-        if (sessionContext == null || !hasValue(sessionContext.get("pendingField"))) {
-            return null;
-        }
-        return sessionContext.get("pendingField").toString();
-    }
-
-    private void applyPendingFieldResult(
-            Map<String, Object> sessionContext,
-            String pendingField,
-            Map<String, Object> extractedPatch,
-            String userMessage
-    ) {
-        if (pendingField == null || sessionContext == null) {
-            return;
-        }
-        boolean answered = Boolean.TRUE.equals(extractedPatch.get("answeredPendingField"));
-        boolean userUncertain = Boolean.TRUE.equals(extractedPatch.get("userUncertain"));
-        boolean categoryChanged = hasValue(extractedPatch.get("categoryRaw"))
-                && !"category".equalsIgnoreCase(pendingField)
-                && !"categoryConfirm".equalsIgnoreCase(pendingField);
-        boolean categoryConfirmed = "categoryConfirm".equalsIgnoreCase(pendingField) && isAffirmativeReply(userMessage);
-        if (answered || userUncertain || categoryChanged || categoryConfirmed
-                || Boolean.FALSE.equals(extractedPatch.get("shouldKeepPending"))) {
-            sessionContext.remove("pendingField");
-            sessionContext.remove("pendingQuestion");
-            return;
-        }
-        sessionContext.put("pendingField", pendingField);
-    }
-
-    private void applyCategoryConfirmation(
-            String userMessage,
-            String pendingField,
-            Map<String, Object> sessionContext
-    ) {
-        if (sessionContext == null) {
-            return;
-        }
-        if ("categoryConfirm".equalsIgnoreCase(pendingField) && isAffirmativeReply(userMessage)) {
-            sessionContext.put("categoryResolution", CategoryResolutionResult.STATUS_RESOLVED);
-        }
-    }
-
-    private boolean isAffirmativeReply(String userMessage) {
-        if (userMessage == null || userMessage.isBlank()) {
-            return false;
-        }
-        String text = userMessage.trim().toLowerCase(java.util.Locale.ROOT);
-        return text.equals("是")
-                || text.equals("对")
-                || text.equals("嗯")
-                || text.equals("yes")
-                || text.equals("y")
-                || text.contains("没错")
-                || text.contains("是的")
-                || text.contains("对的");
     }
 
     private void markAskedFields(Map<String, Object> sessionContext, Map<String, Object> effectiveContext) {

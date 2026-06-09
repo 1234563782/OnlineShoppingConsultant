@@ -1,9 +1,13 @@
 package com.onlineshopping.orchestrator.service;
 
 import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
+import com.onlineshopping.orchestrator.dto.MergeSessionResult;
 import com.onlineshopping.orchestrator.support.ProfileListNormalizer;
+import com.onlineshopping.orchestrator.support.SessionContextKeys;
+import com.onlineshopping.orchestrator.support.SessionContextSupport;
 import org.springframework.stereotype.Service;
 
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -15,33 +19,62 @@ import java.util.Set;
 public class ContextMergeService {
 
     private final ConstraintResolver constraintResolver;
+    private final CategoryEquivalenceChecker categoryEquivalenceChecker;
 
-    public ContextMergeService(ConstraintResolver constraintResolver) {
+    public ContextMergeService(
+            ConstraintResolver constraintResolver,
+            CategoryEquivalenceChecker categoryEquivalenceChecker
+    ) {
         this.constraintResolver = constraintResolver;
+        this.categoryEquivalenceChecker = categoryEquivalenceChecker;
     }
 
-    public Map<String, Object> mergeSessionPatch(
+    public MergeSessionResult mergeSessionPatch(
             Map<String, Object> currentSessionContext,
             Map<String, Object> extractedPatch
     ) {
         Map<String, Object> current = currentSessionContext == null ? Map.of() : currentSessionContext;
-        Map<String, Object> merged = new HashMap<>(isCategoryChanged(current, extractedPatch) ? Map.of() : current);
-        mergeIntentType(merged, extractedPatch);
-        copyIfPresent(merged, extractedPatch, "categoryRaw");
-        copyIfPresent(merged, extractedPatch, "categoryId");
-        copyIfPresent(merged, extractedPatch, "categoryName");
-        copyIfPresent(merged, extractedPatch, "scene");
-        copyIfPresent(merged, extractedPatch, "notes");
-        copyIfPresent(merged, extractedPatch, "userUncertain");
+        Map<String, Object> patch = extractedPatch == null ? Map.of() : extractedPatch;
 
-        Object budget = extractedPatch.get("budget");
-        if (budget instanceof Map<?, ?> budgetMap && hasBudgetValue(budgetMap)) {
-            merged.put("budget", budgetMap);
+        boolean categoryReplace = shouldReplaceCategory(current, patch);
+        Map<String, Object> merged = new HashMap<>();
+        if (categoryReplace) {
+            preserveFieldsOnCategoryReplace(merged, current);
+            applyCategoryReplaceSideEffects(merged);
+        } else {
+            merged.putAll(current);
         }
-        mergeStringList(merged, extractedPatch, "brandPreferences");
-        mergeStringList(merged, extractedPatch, "dislikes");
-        mergeStringList(merged, extractedPatch, "mustHave");
-        return merged;
+
+        mergeIntentType(merged, patch);
+        copyIfPresent(merged, patch, SessionContextKeys.CATEGORY_RAW);
+        copyIfPresent(merged, patch, SessionContextKeys.SCENE);
+        copyIfPresent(merged, patch, "notes");
+        copyIfPresent(merged, patch, "userUncertain");
+        copyIfPresent(merged, patch, SessionContextKeys.CATEGORY_SOURCE);
+
+        Object budget = patch.get(SessionContextKeys.BUDGET);
+        if (budget instanceof Map<?, ?> budgetMap && hasBudgetValue(budgetMap)) {
+            merged.put(SessionContextKeys.BUDGET, budgetMap);
+        }
+
+        mergeStringList(merged, patch, "brandPreferences");
+        mergeStringList(merged, patch, "dislikes");
+        mergeStringList(merged, patch, "mustHave");
+
+        if (categoryReplace && SessionContextSupport.hasValue(merged.get(SessionContextKeys.CATEGORY_RAW))) {
+            merged.put(SessionContextKeys.CATEGORY_UPDATED_AT, OffsetDateTime.now().toString());
+            if (!SessionContextSupport.hasValue(merged.get(SessionContextKeys.CATEGORY_SOURCE))) {
+                merged.put(SessionContextKeys.CATEGORY_SOURCE, "llm");
+            }
+        }
+
+        String reason = categoryReplace
+                ? "category_raw_changed:"
+                + SessionContextSupport.categoryLabel(current)
+                + "->"
+                + merged.get(SessionContextKeys.CATEGORY_RAW)
+                : null;
+        return new MergeSessionResult(merged, categoryReplace, reason);
     }
 
     public Map<String, Object> buildEffectiveContext(
@@ -71,7 +104,7 @@ public class ContextMergeService {
 
     public Map<String, Object> toMemoryPatch(Map<String, Object> sessionContext) {
         Map<String, Object> patch = new HashMap<>();
-        Object budget = sessionContext.get("budget");
+        Object budget = sessionContext.get(SessionContextKeys.BUDGET);
         if (budget instanceof Map<?, ?> budgetMap && hasBudgetValue(budgetMap)) {
             Object min = budgetMap.get("min");
             Object max = budgetMap.get("max");
@@ -82,7 +115,7 @@ public class ContextMergeService {
                 patch.put("budgetMax", max);
             }
         }
-        copyIfPresent(patch, sessionContext, "scene");
+        copyIfPresent(patch, sessionContext, SessionContextKeys.SCENE);
         copyIfPresent(patch, sessionContext, "brandPreferences");
         copyIfPresent(patch, sessionContext, "dislikes");
         copyIfPresent(patch, sessionContext, "notes");
@@ -109,36 +142,76 @@ public class ContextMergeService {
         return patch;
     }
 
+    private void preserveFieldsOnCategoryReplace(Map<String, Object> merged, Map<String, Object> current) {
+        copyIfPresent(merged, current, "brandPreferences");
+        copyIfPresent(merged, current, "dislikes");
+        copyIfPresent(merged, current, "notes");
+        copyIfPresent(merged, current, SessionContextKeys.INTENT_TYPE);
+    }
+
+    private void applyCategoryReplaceSideEffects(Map<String, Object> merged) {
+        clearCategoryDerivedFields(merged);
+        merged.remove(SessionContextKeys.SCENE);
+        merged.remove(SessionContextKeys.MUST_HAVE);
+        merged.remove(SessionContextKeys.PENDING_FIELD);
+        merged.remove(SessionContextKeys.PENDING_QUESTION);
+
+        List<String> askedFields = new ArrayList<>(normalizeList(merged.get(SessionContextKeys.ASKED_FIELDS)));
+        askedFields.remove("categoryConfirm");
+        if (askedFields.isEmpty()) {
+            merged.remove(SessionContextKeys.ASKED_FIELDS);
+        } else {
+            merged.put(SessionContextKeys.ASKED_FIELDS, askedFields);
+        }
+    }
+
+    public void clearCategoryDerivedFields(Map<String, Object> sessionContext) {
+        if (sessionContext == null) {
+            return;
+        }
+        sessionContext.remove(SessionContextKeys.CATEGORY_ID);
+        sessionContext.remove(SessionContextKeys.CATEGORY_NAME);
+        sessionContext.remove(SessionContextKeys.CATEGORY_CONFIDENCE);
+        sessionContext.remove(SessionContextKeys.CATEGORY_RESOLUTION);
+        sessionContext.remove(SessionContextKeys.RESOLVED_CATEGORY_RAW);
+    }
+
+    private boolean shouldReplaceCategory(Map<String, Object> current, Map<String, Object> patch) {
+        Object newCategoryRaw = patch.get(SessionContextKeys.CATEGORY_RAW);
+        if (!SessionContextSupport.hasValue(newCategoryRaw)) {
+            return false;
+        }
+        if (!hasCategoryValue(current)) {
+            return false;
+        }
+        return !categoryEquivalenceChecker.isSameCategoryAsSession(
+                current,
+                newCategoryRaw.toString().trim()
+        );
+    }
+
     private void copyIfPresent(Map<String, Object> target, Map<String, Object> source, String key) {
         Object value = source == null ? null : source.get(key);
-        if (hasValue(value)) {
+        if (SessionContextSupport.hasValue(value)) {
             target.put(key, value);
         }
     }
 
     private void mergeIntentType(Map<String, Object> target, Map<String, Object> source) {
-        Object value = source == null ? null : source.get("intentType");
-        if (!hasValue(value)) {
+        Object value = source == null ? null : source.get(SessionContextKeys.INTENT_TYPE);
+        if (!SessionContextSupport.hasValue(value)) {
             return;
         }
         String incoming = value.toString();
         boolean hasShoppingContext = hasCategoryValue(target)
-                || hasBudgetValue(target.get("budget"))
-                || hasValue(target.get("scene"));
+                || hasBudgetValue(target.get(SessionContextKeys.BUDGET))
+                || SessionContextSupport.hasValue(target.get(SessionContextKeys.SCENE));
         if (hasShoppingContext
                 && ("small_talk".equalsIgnoreCase(incoming) || "non_shopping".equalsIgnoreCase(incoming))) {
-            target.put("intentType", "shopping");
+            target.put(SessionContextKeys.INTENT_TYPE, "shopping");
             return;
         }
-        target.put("intentType", incoming);
-    }
-
-    private boolean isCategoryChanged(Map<String, Object> current, Map<String, Object> extractedPatch) {
-        Object oldCategory = categoryValue(current);
-        Object newCategory = categoryValue(extractedPatch);
-        return hasValue(oldCategory)
-                && hasValue(newCategory)
-                && !oldCategory.toString().equalsIgnoreCase(newCategory.toString());
+        target.put(SessionContextKeys.INTENT_TYPE, incoming);
     }
 
     private void mergeStringList(Map<String, Object> target, Map<String, Object> source, String key) {
@@ -157,7 +230,7 @@ public class ContextMergeService {
 
     private boolean hasAnyValue(Map<?, ?> map) {
         for (Object value : map.values()) {
-            if (hasValue(value)) {
+            if (SessionContextSupport.hasValue(value)) {
                 return true;
             }
         }
@@ -168,51 +241,35 @@ public class ContextMergeService {
         if (!(value instanceof Map<?, ?> map)) {
             return false;
         }
-        return hasValue(map.get("min")) || hasValue(map.get("max"));
+        return SessionContextSupport.hasValue(map.get("min")) || SessionContextSupport.hasValue(map.get("max"));
     }
 
     private boolean hasCategoryValue(Map<String, Object> context) {
-        return hasValue(categoryValue(context));
+        return SessionContextSupport.hasValue(categoryValue(context));
     }
 
     private Object categoryValue(Map<String, Object> context) {
         if (context == null) {
             return null;
         }
-        if (hasValue(context.get("categoryId"))) {
-            return context.get("categoryId");
+        if (SessionContextSupport.hasValue(context.get(SessionContextKeys.CATEGORY_ID))) {
+            return context.get(SessionContextKeys.CATEGORY_ID);
         }
-        if (hasValue(context.get("categoryName"))) {
-            return context.get("categoryName");
+        if (SessionContextSupport.hasValue(context.get(SessionContextKeys.CATEGORY_NAME))) {
+            return context.get(SessionContextKeys.CATEGORY_NAME);
         }
-        if (hasValue(context.get("categoryRaw"))) {
-            return context.get("categoryRaw");
+        if (SessionContextSupport.hasValue(context.get(SessionContextKeys.CATEGORY_RAW))) {
+            return context.get(SessionContextKeys.CATEGORY_RAW);
         }
         return context.get("category");
     }
 
-    private boolean hasValue(Object value) {
-        if (value == null) {
-            return false;
-        }
-        if (value instanceof String s) {
-            return !s.isBlank() && !"null".equalsIgnoreCase(s);
-        }
-        if (value instanceof List<?> list) {
-            return !list.isEmpty();
-        }
-        if (value instanceof Map<?, ?> map) {
-            return hasAnyValue(map);
-        }
-        return true;
-    }
-
     private List<String> missingFields(Map<String, Object> effective, Map<String, Object> resolvedConstraints) {
         List<String> missing = new ArrayList<>();
-        String categoryResolution = stringValue(effective.get("categoryResolution"));
-        boolean hasCategoryId = hasValue(effective.get("categoryId"));
-        boolean hasCategoryRaw = hasValue(effective.get("categoryRaw"));
-        List<String> askedFields = normalizeList(effective.get("askedFields"));
+        String categoryResolution = SessionContextSupport.stringValue(effective.get(SessionContextKeys.CATEGORY_RESOLUTION));
+        boolean hasCategoryId = SessionContextSupport.hasValue(effective.get(SessionContextKeys.CATEGORY_ID));
+        boolean hasCategoryRaw = SessionContextSupport.hasValue(effective.get(SessionContextKeys.CATEGORY_RAW));
+        List<String> askedFields = normalizeList(effective.get(SessionContextKeys.ASKED_FIELDS));
 
         if (!hasCategoryRaw && !hasCategoryId) {
             missing.add("category");
@@ -227,20 +284,12 @@ public class ContextMergeService {
             missing.add("category");
         }
 
-        if (!hasBudgetValue(resolvedConstraints.get("budget"))) {
+        if (!hasBudgetValue(resolvedConstraints.get(SessionContextKeys.BUDGET))) {
             missing.add("budget");
         }
-        if (!hasValue(resolvedConstraints.get("scene"))) {
+        if (!SessionContextSupport.hasValue(resolvedConstraints.get(SessionContextKeys.SCENE))) {
             missing.add("scene");
         }
         return missing;
-    }
-
-    private String stringValue(Object value) {
-        if (value == null) {
-            return null;
-        }
-        String text = value.toString().trim();
-        return text.isBlank() ? null : text;
     }
 }

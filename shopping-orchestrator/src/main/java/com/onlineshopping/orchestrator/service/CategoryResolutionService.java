@@ -1,6 +1,8 @@
 package com.onlineshopping.orchestrator.service;
 
 import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
+import com.onlineshopping.orchestrator.support.SessionContextKeys;
+import com.onlineshopping.orchestrator.support.SessionContextSupport;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -25,41 +27,50 @@ public class CategoryResolutionService {
         if (sessionContext == null) {
             return CategoryResolutionResult.skipped();
         }
-        if (CategoryResolutionResult.STATUS_RESOLVED.equals(stringValue(sessionContext.get("categoryResolution")))
-                && stringValue(sessionContext.get("categoryId")) != null) {
+
+        String currentRaw = SessionContextSupport.stringValue(sessionContext.get(SessionContextKeys.CATEGORY_RAW));
+        String resolvedRaw = SessionContextSupport.stringValue(sessionContext.get(SessionContextKeys.RESOLVED_CATEGORY_RAW));
+        String categoryId = SessionContextSupport.stringValue(sessionContext.get(SessionContextKeys.CATEGORY_ID));
+        String categoryResolution = SessionContextSupport.stringValue(sessionContext.get(SessionContextKeys.CATEGORY_RESOLUTION));
+
+        if (CategoryResolutionResult.STATUS_RESOLVED.equals(categoryResolution)
+                && categoryId != null
+                && canReuseResolvedCategory(currentRaw, resolvedRaw)) {
             return new CategoryResolutionResult(
                     CategoryResolutionResult.STATUS_RESOLVED,
-                    stringValue(sessionContext.get("categoryId")),
-                    stringValue(sessionContext.get("categoryName")),
-                    stringValue(sessionContext.get("categoryRaw")),
-                    doubleValue(sessionContext.get("categoryConfidence")),
+                    categoryId,
+                    SessionContextSupport.stringValue(sessionContext.get(SessionContextKeys.CATEGORY_NAME)),
+                    currentRaw == null ? resolvedRaw : currentRaw,
+                    doubleValue(sessionContext.get(SessionContextKeys.CATEGORY_CONFIDENCE)),
                     "confirmed"
             );
         }
-        Object rawValue = sessionContext.get("categoryRaw");
-        if (rawValue == null || rawValue.toString().isBlank()) {
-            sessionContext.remove("categoryId");
-            sessionContext.remove("categoryName");
-            sessionContext.remove("categoryConfidence");
-            sessionContext.put("categoryResolution", CategoryResolutionResult.STATUS_SKIPPED);
+
+        if (currentRaw == null || currentRaw.isBlank()) {
+            sessionContext.remove(SessionContextKeys.CATEGORY_ID);
+            sessionContext.remove(SessionContextKeys.CATEGORY_NAME);
+            sessionContext.remove(SessionContextKeys.CATEGORY_CONFIDENCE);
+            sessionContext.remove(SessionContextKeys.RESOLVED_CATEGORY_RAW);
+            sessionContext.put(SessionContextKeys.CATEGORY_RESOLUTION, CategoryResolutionResult.STATUS_SKIPPED);
             return CategoryResolutionResult.skipped();
         }
 
-        String categoryRaw = rawValue.toString().trim();
+        String categoryRaw = currentRaw.trim();
         Map<String, Object> normalized = categoryClientService.normalize(categoryRaw);
-        String status = stringValue(normalized.get("status"));
+        String status = SessionContextSupport.stringValue(normalized.get("status"));
         double confidence = doubleValue(normalized.get("confidence"));
-        String categoryId = stringValue(normalized.get("categoryId"));
-        String categoryName = stringValue(normalized.get("categoryName"));
-        String matchedBy = stringValue(normalized.get("matchedBy"));
+        String normalizedCategoryId = SessionContextSupport.stringValue(normalized.get("categoryId"));
+        String categoryName = SessionContextSupport.stringValue(normalized.get("categoryName"));
+        String matchedBy = SessionContextSupport.stringValue(normalized.get("matchedBy"));
 
-        sessionContext.put("categoryRaw", categoryRaw);
-        sessionContext.put("categoryConfidence", confidence);
+        sessionContext.put(SessionContextKeys.CATEGORY_RAW, categoryRaw);
+        sessionContext.put(SessionContextKeys.CATEGORY_CONFIDENCE, confidence);
 
         if (CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE.equals(status)) {
-            sessionContext.remove("categoryId");
-            sessionContext.remove("categoryName");
-            sessionContext.put("categoryResolution", CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE);
+            sessionContext.remove(SessionContextKeys.CATEGORY_ID);
+            sessionContext.remove(SessionContextKeys.CATEGORY_NAME);
+            sessionContext.remove(SessionContextKeys.RESOLVED_CATEGORY_RAW);
+            sessionContext.put(SessionContextKeys.CATEGORY_RESOLUTION, CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE);
             return new CategoryResolutionResult(
                     CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE,
                     null,
@@ -71,14 +82,15 @@ public class CategoryResolutionService {
         }
 
         if (CategoryResolutionResult.STATUS_RESOLVED.equals(status)
-                && categoryId != null
+                && normalizedCategoryId != null
                 && confidence >= confidenceThreshold) {
-            sessionContext.put("categoryId", categoryId);
-            sessionContext.put("categoryName", categoryName);
-            sessionContext.put("categoryResolution", CategoryResolutionResult.STATUS_RESOLVED);
+            sessionContext.put(SessionContextKeys.CATEGORY_ID, normalizedCategoryId);
+            sessionContext.put(SessionContextKeys.CATEGORY_NAME, categoryName);
+            sessionContext.put(SessionContextKeys.CATEGORY_RESOLUTION, CategoryResolutionResult.STATUS_RESOLVED);
+            sessionContext.put(SessionContextKeys.RESOLVED_CATEGORY_RAW, categoryRaw);
             return new CategoryResolutionResult(
                     CategoryResolutionResult.STATUS_RESOLVED,
-                    categoryId,
+                    normalizedCategoryId,
                     categoryName,
                     categoryRaw,
                     confidence,
@@ -86,13 +98,14 @@ public class CategoryResolutionService {
             );
         }
 
-        if (CategoryResolutionResult.STATUS_RESOLVED.equals(status) && categoryId != null) {
-            sessionContext.put("categoryId", categoryId);
-            sessionContext.put("categoryName", categoryName);
-            sessionContext.put("categoryResolution", CategoryResolutionResult.STATUS_LOW_CONFIDENCE);
+        if (CategoryResolutionResult.STATUS_RESOLVED.equals(status) && normalizedCategoryId != null) {
+            sessionContext.put(SessionContextKeys.CATEGORY_ID, normalizedCategoryId);
+            sessionContext.put(SessionContextKeys.CATEGORY_NAME, categoryName);
+            sessionContext.put(SessionContextKeys.CATEGORY_RESOLUTION, CategoryResolutionResult.STATUS_LOW_CONFIDENCE);
+            sessionContext.put(SessionContextKeys.RESOLVED_CATEGORY_RAW, categoryRaw);
             return new CategoryResolutionResult(
                     CategoryResolutionResult.STATUS_LOW_CONFIDENCE,
-                    categoryId,
+                    normalizedCategoryId,
                     categoryName,
                     categoryRaw,
                     confidence,
@@ -100,9 +113,10 @@ public class CategoryResolutionService {
             );
         }
 
-        sessionContext.remove("categoryId");
-        sessionContext.remove("categoryName");
-        sessionContext.put("categoryResolution", CategoryResolutionResult.STATUS_UNRESOLVED);
+        sessionContext.remove(SessionContextKeys.CATEGORY_ID);
+        sessionContext.remove(SessionContextKeys.CATEGORY_NAME);
+        sessionContext.remove(SessionContextKeys.RESOLVED_CATEGORY_RAW);
+        sessionContext.put(SessionContextKeys.CATEGORY_RESOLUTION, CategoryResolutionResult.STATUS_UNRESOLVED);
         return new CategoryResolutionResult(
                 CategoryResolutionResult.STATUS_UNRESOLVED,
                 null,
@@ -113,12 +127,14 @@ public class CategoryResolutionService {
         );
     }
 
-    private String stringValue(Object value) {
-        if (value == null) {
-            return null;
+    private boolean canReuseResolvedCategory(String currentRaw, String resolvedRaw) {
+        if (resolvedRaw == null) {
+            return currentRaw == null;
         }
-        String text = value.toString().trim();
-        return text.isBlank() ? null : text;
+        if (currentRaw == null) {
+            return false;
+        }
+        return currentRaw.equalsIgnoreCase(resolvedRaw);
     }
 
     private double doubleValue(Object value) {

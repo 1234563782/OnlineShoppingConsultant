@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.LlmRoutingAgent;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.onlineshopping.orchestrator.auth.AuthSupport;
 import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
 import com.onlineshopping.orchestrator.dto.ChatRequest;
@@ -67,14 +68,15 @@ public class ChatController {
 
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chat(@Valid @RequestBody ChatRequest request) {
+        final String userId = AuthSupport.requireUserId();
         return Flux.defer(() -> {
             try {
                 String sessionId = resolveSessionId(request.getSessionId());
-                ChatPreparedContext prepared = prepareContext(request, sessionId);
+                ChatPreparedContext prepared = prepareContext(userId, request, sessionId);
 
                 if (isSmallTalkOrNonShopping(prepared.intentType())) {
                     String reply = buildSmallTalkReply(request.getMessage());
-                    sessionStoreService.appendTurns(sessionId, prepared.sessionState(), request.getMessage(), reply);
+                    sessionStoreService.appendTurns(userId, sessionId, prepared.sessionState(), request.getMessage(), reply);
                     return streamStaticReply(
                             sessionId,
                             reply,
@@ -91,9 +93,9 @@ public class ChatController {
                     markAskedFields(prepared.sessionContext(), prepared.effectiveContext());
                     markPendingField(prepared.sessionContext(), prepared.effectiveContext(), clarification);
                     prepared.sessionState().setSessionContext(prepared.sessionContext());
-                    sessionStoreService.appendTurns(sessionId, prepared.sessionState(), request.getMessage(), clarification);
+                    sessionStoreService.appendTurns(userId, sessionId, prepared.sessionState(), request.getMessage(), clarification);
                     LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
-                            request.getUserId(),
+                            userId,
                             prepared.extractedPatch(),
                             prepared.effectiveContext(),
                             prepared.profile(),
@@ -133,17 +135,17 @@ public class ChatController {
     private Flux<ServerSentEvent<String>> streamAgentReply(ChatPreparedContext prepared, ChatRequest request) throws Exception {
         String userInput = buildUserInput(
                 request.getMessage(),
-                request.getUserId(),
+                prepared.userId(),
                 resolvedConstraints(prepared.effectiveContext())
         );
         RunnableConfig runnableConfig = RunnableConfig.builder()
                 .threadId(prepared.sessionId())
-                .addMetadata("user_id", request.getUserId())
+                .addMetadata("user_id", prepared.userId())
                 .build();
         Map<String, Object> input = Map.of(
                 "input", userInput,
                 "chat_id", prepared.sessionId(),
-                "user_id", request.getUserId()
+                "user_id", prepared.userId()
         );
 
         CompiledGraph compiledGraph = supervisorAgent.getAndCompileGraph();
@@ -181,9 +183,9 @@ public class ChatController {
     ) {
         String reply = normalizeAgentReply(replyBuffer.content(), prepared.effectiveContext());
 
-        sessionStoreService.appendTurns(prepared.sessionId(), prepared.sessionState(), request.getMessage(), reply);
+        sessionStoreService.appendTurns(prepared.userId(), prepared.sessionId(), prepared.sessionState(), request.getMessage(), reply);
         LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
-                request.getUserId(),
+                prepared.userId(),
                 prepared.extractedPatch(),
                 prepared.effectiveContext(),
                 prepared.profile(),
@@ -209,9 +211,9 @@ public class ChatController {
         return rawReply.trim();
     }
 
-    private ChatPreparedContext prepareContext(ChatRequest request, String sessionId) {
-        SessionState sessionState = sessionStoreService.getSession(sessionId, request.getUserId());
-        Map<String, Object> profile = memoryClientService.getProfile(request.getUserId());
+    private ChatPreparedContext prepareContext(String userId, ChatRequest request, String sessionId) {
+        SessionState sessionState = sessionStoreService.getSession(userId, sessionId);
+        Map<String, Object> profile = memoryClientService.getProfile(userId);
         Map<String, Object> currentSessionContext = sessionState.getSessionContext();
         String pendingField = pendingField(currentSessionContext);
         Map<String, Object> extractedPatch = pendingField == null
@@ -239,6 +241,7 @@ public class ChatController {
         sessionState.setSessionContext(sessionContext);
         String intentType = String.valueOf(effectiveContext.getOrDefault("intentType", "shopping"));
         return new ChatPreparedContext(
+                userId,
                 sessionId,
                 sessionState,
                 profile,

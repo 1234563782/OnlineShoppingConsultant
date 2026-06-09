@@ -4,21 +4,10 @@ import jakarta.validation.constraints.NotBlank;
 
 public class ChatRequest {
 
-    @NotBlank
-    private String userId;
-
     private String sessionId;
 
     @NotBlank
     private String message;
-
-    public String getUserId() {
-        return userId;
-    }
-
-    public void setUserId(String userId) {
-        this.userId = userId;
-    }
 
     public String getSessionId() {
         return sessionId;

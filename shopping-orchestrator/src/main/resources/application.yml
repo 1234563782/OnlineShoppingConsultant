@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: shopping-orchestrator
+  datasource:
+    url: ${SHOPPING_MEMORY_DB_URL:jdbc:mysql://localhost:3306/shopping_consultant?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${SHOPPING_MEMORY_DB_USERNAME:root}
+    password: ${SHOPPING_MEMORY_DB_PASSWORD:root}
   ai:
     dashscope:
       api-key: ${SPRING_AI_DASHSCOPE_API_KEY:}
@@ -32,6 +37,15 @@ shopping:
   session:
     ttl-days: 7
     max-turns: 10
+  auth:
+    cookie-name: ${SHOPPING_AUTH_COOKIE_NAME:shopping_auth_token}
+    token-ttl-days: ${SHOPPING_AUTH_TOKEN_TTL_DAYS:7}
+    cookie-secure: ${SHOPPING_AUTH_COOKIE_SECURE:false}
+    cookie-same-site: ${SHOPPING_AUTH_COOKIE_SAME_SITE:Lax}
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
 
 management:
   endpoints:

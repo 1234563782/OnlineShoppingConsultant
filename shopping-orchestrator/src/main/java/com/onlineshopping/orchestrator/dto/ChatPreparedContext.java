@@ -3,6 +3,7 @@ package com.onlineshopping.orchestrator.dto;
 import java.util.Map;
 
 public record ChatPreparedContext(
+        String userId,
         String sessionId,
         SessionState sessionState,
         Map<String, Object> profile,

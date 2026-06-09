@@ -2,19 +2,31 @@
 
 ## Orchestrator
 
+### Auth（httpOnly Cookie + Redis Session）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| POST | `/api/v1/auth/register` | 否 | 注册，响应 Set-Cookie |
+| POST | `/api/v1/auth/login` | 否 | 登录，响应 Set-Cookie |
+| POST | `/api/v1/auth/logout` | 否 | 登出，清 Cookie 与 Redis |
+| GET | `/api/v1/auth/me` | Cookie | 当前登录用户 |
+
+Cookie 名默认 `shopping_auth_token`（见 `shopping.auth.cookie-name`）。浏览器请求需 `credentials: include`。
+
 ### `POST /api/v1/chat`
 
-SSE 流式响应（`Content-Type: text/event-stream`）。
+SSE 流式响应（`Content-Type: text/event-stream`）。**需要登录 Cookie**。
 
 Request:
 
 ```json
 {
-  "userId": "u001",
   "sessionId": "optional-session-id",
   "message": "想买个降噪耳机，预算2000"
 }
 ```
+
+`userId` 由服务端从 Cookie 会话解析，**客户端不再传递**。
 
 事件类型（每条 `data` 为 JSON）：
 

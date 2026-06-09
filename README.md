@@ -4,7 +4,7 @@
 
 ## 当前架构（初版）
 
-- `shopping-orchestrator`：总控 Agent，对外 `POST /api/v1/chat`（SSE 流式）+ Web 聊天页
+- `shopping-orchestrator`：总控 Agent，对外 `POST /api/v1/chat`（SSE 流式）+ **Vue3 前端**（登录/注册/聊天）
 - `shopping-consult-agent`：咨询导购 Agent（A2A Server）
 - `shopping-memory-service`：用户长期画像（MySQL，REST）
 - `shopping-catalog-mcp-server`：商品搜索/详情工具（MCP）+ **类目归一化 REST**（供 orchestrator 调用）
@@ -64,3 +64,27 @@ mysql -u root -p < scripts/init-mysql.sql
 ```
 
 各使用 MySQL 的模块采用 **MyBatis-Plus** 访问数据库（`mapper` 包 + `BaseMapper`）；表结构由 `scripts/init-mysql.sql` 维护，不会自动建表。
+
+## 前端（Vue3）
+
+源码在 `shopping-web/`，构建产物输出到 orchestrator 的 `static/` 目录：
+
+```bash
+cd shopping-web
+npm install
+npm run build
+```
+
+开发时可 `npm run dev`（5173 端口，已代理 `/api` 到 8087）。
+
+浏览器访问 **http://localhost:8087** ，先注册/登录；登录态为 **httpOnly Cookie**，会话 Token 存在 **Redis**（`auth:token:*`）。
+
+## 鉴权 API（orchestrator）
+
+| 接口 | 说明 |
+|------|------|
+| `POST /api/v1/auth/register` | 注册，Set-Cookie |
+| `POST /api/v1/auth/login` | 登录，Set-Cookie |
+| `POST /api/v1/auth/logout` | 登出，清 Cookie + Redis |
+| `GET /api/v1/auth/me` | 当前用户（需 Cookie） |
+| `POST /api/v1/chat` | 聊天 SSE（需 Cookie，**不再传 userId**） |

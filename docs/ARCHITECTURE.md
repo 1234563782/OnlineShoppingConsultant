@@ -4,7 +4,7 @@
 
 - `shopping-orchestrator` (8087): chat API, Web UI, Redis session store, A2A client discovery.
 - `shopping-consult-agent` (8081): A2A server (`consult_agent`), MCP client via Nacos.
-- `shopping-memory-service` (8086): long-term profile memory REST service (H2).
+- `shopping-memory-service` (8086): long-term profile memory REST service (MySQL).
 - `catalog-mcp-server` (8083): product search/detail MCP tools; **REST** `GET /api/v1/categories/normalize` for category normalization (used by orchestrator).
 - `inventory-mcp-server` (8084): stock tools.
 - `promotion-mcp-server` (8085): promotion tools.

@@ -69,7 +69,19 @@ ON DUPLICATE KEY UPDATE
     description = VALUES(description);
 
 -- ============================================================
--- 3) 长期画像：user_memory（memory-service 用，与 catalog 同库）
+-- 3) 用户账号：user_account（orchestrator 登录注册）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS user_account (
+    id            VARCHAR(64)  NOT NULL PRIMARY KEY,
+    username      VARCHAR(64)  NOT NULL UNIQUE,
+    password_hash VARCHAR(128) NOT NULL,
+    display_name  VARCHAR(64)  NULL,
+    created_at    DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at    DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================
+-- 4) 长期画像：user_memory（memory-service 用，与 catalog 同库）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS user_memory (
     user_id      VARCHAR(128) NOT NULL PRIMARY KEY,

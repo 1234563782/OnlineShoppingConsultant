@@ -28,8 +28,8 @@ public class SessionStoreService {
         this.objectMapper = objectMapper;
     }
 
-    public SessionState getSession(String sessionId, String userId) {
-        String key = key(sessionId);
+    public SessionState getSession(String userId, String sessionId) {
+        String key = key(userId, sessionId);
         String json = redisTemplate.opsForValue().get(key);
         if (json == null || json.isBlank()) {
             SessionState state = new SessionState();
@@ -42,6 +42,13 @@ public class SessionStoreService {
             if (state.getTurns() == null) {
                 state.setTurns(new ArrayList<>());
             }
+            if (state.getUserId() != null && !state.getUserId().equals(userId)) {
+                SessionState fresh = new SessionState();
+                fresh.setUserId(userId);
+                fresh.setUpdatedAt(Instant.now().toString());
+                return fresh;
+            }
+            state.setUserId(userId);
             return state;
         } catch (Exception e) {
             SessionState state = new SessionState();
@@ -51,16 +58,22 @@ public class SessionStoreService {
         }
     }
 
-    public void appendTurns(String sessionId, SessionState state, String userInput, String assistantReply) {
+    public void appendTurns(String userId, String sessionId, SessionState state, String userInput, String assistantReply) {
         List<SessionState.Turn> turns = state.getTurns();
         turns.add(turn("user", userInput));
         turns.add(turn("assistant", assistantReply));
         if (turns.size() > maxTurns) {
             state.setTurns(new ArrayList<>(turns.subList(turns.size() - maxTurns, turns.size())));
         }
+        state.setUserId(userId);
         state.setUpdatedAt(Instant.now().toString());
         try {
-            redisTemplate.opsForValue().set(key(sessionId), objectMapper.writeValueAsString(state), ttlDays, TimeUnit.DAYS);
+            redisTemplate.opsForValue().set(
+                    key(userId, sessionId),
+                    objectMapper.writeValueAsString(state),
+                    ttlDays,
+                    TimeUnit.DAYS
+            );
         } catch (Exception ignored) {
         }
     }
@@ -73,7 +86,7 @@ public class SessionStoreService {
         return t;
     }
 
-    private String key(String sessionId) {
-        return "session:" + sessionId;
+    private String key(String userId, String sessionId) {
+        return "session:chat:" + userId + ":" + sessionId;
     }
 }

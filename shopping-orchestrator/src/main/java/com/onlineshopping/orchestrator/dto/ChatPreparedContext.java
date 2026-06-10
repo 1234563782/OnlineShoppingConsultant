@@ -13,6 +13,7 @@ public record ChatPreparedContext(
         String intentType,
         CategoryResolutionResult categoryResolution,
         Map<String, Object> stateDebug,
-        TurnDecision turnDecision
+        TurnDecision turnDecision,
+        PrefetchedSearchResult prefetchedSearch
 ) {
 }

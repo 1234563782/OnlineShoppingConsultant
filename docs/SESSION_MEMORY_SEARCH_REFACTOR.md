@@ -4,6 +4,7 @@
 > 相关专题文档：  
 > - [CATEGORY_SLOT_REFACTOR.md](./CATEGORY_SLOT_REFACTOR.md) — 品类槽位 Replace 与 reconcile 历程  
 > - [CATEGORY_PATCH_GUARD.md](./CATEGORY_PATCH_GUARD.md) — 品类证据门控  
+> - [SEARCH_FIRST_PREFETCH.md](./SEARCH_FIRST_PREFETCH.md) — Orchestrator 先搜后答（预搜索）  
 > - [OPEN_CLAUDECODE_BORROWINGS.md](./OPEN_CLAUDECODE_BORROWINGS.md) — P0/P1 借鉴路线图  
 
 ---
@@ -59,7 +60,8 @@
   → MemoryRecallExcludePlanner → recall（按 session 去重）
   → finalizeWithProfile（ConstraintResolver + searchHints）
   → TurnOutcomeResolver 路由
-  → Agent 带 searchHints 调 searchProduct（分层兜底）
+  → READY_FOR_AGENT：Orchestrator 预搜索（见 SEARCH_FIRST_PREFETCH.md）
+  → Agent 基于 prefetchedSearchResult 写话术（预搜索成功时禁止 searchProduct）
   → MemoryWriteFilter → 长期画像写入
 ```
 
@@ -298,6 +300,7 @@ src/main/resources/application.yml   # searchProduct / matchType 说明更新
 CATEGORY_SLOT_REFACTOR.md
 CATEGORY_PATCH_GUARD.md
 SESSION_MEMORY_SEARCH_REFACTOR.md   # 本文
+SEARCH_FIRST_PREFETCH.md            # 先搜后答专题
 ```
 
 ---
@@ -306,8 +309,8 @@ SESSION_MEMORY_SEARCH_REFACTOR.md   # 本文
 
 | 优先级 | 项 | 说明 |
 |--------|-----|------|
-| P0 | `ProductReplyValidator` | 校验回复商品名/价格必须来自工具 JSON，防编造 |
-| P1 | Orchestrator 先搜后答 | 搜索由 Orchestrator 调 catalog，Agent 只写话术 |
+| P0 | `ProductReplyValidator` | 校验回复商品名/价格必须来自 `prefetchedSearch.products`，防编造 |
+| ~~P1~~ | ~~Orchestrator 先搜后答~~ | **已完成**，见 [SEARCH_FIRST_PREFETCH.md](./SEARCH_FIRST_PREFETCH.md) |
 | P1 | 品牌别名配置外置 | `shopping.brands.aliases` 替代代码内常量 |
 | P2 | recall 并行 prefetch | 在 exclude 准确前提下与 slots 并行 |
 | P2 | SSE `tool_start` / `state` 事件 | 前端可见工具执行与槽位变更 |
@@ -324,9 +327,10 @@ SESSION_MEMORY_SEARCH_REFACTOR.md   # 本文
 | 记忆写入 | 无门控 | MemoryWriteFilter |
 | 品牌识别 | 仅 LLM | + BrandIntentDetector 规则 |
 | 搜索兜底 | Agent 自行 keyword | ProductSearchFallback 分层 |
+| 搜索执行 | Agent 调 MCP | Orchestrator 预搜索 + Agent 只叙述 |
 | 搜索参数 | 无 searchHints | resolvedConstraints.searchHints |
-| 单测 | 几乎没有 | 8 个测试类 |
-| 文档 | 品类专题 | + Guard + 本文总览 |
+| 单测 | 几乎没有 | 9 个测试类（含 CatalogSearchPrefetchServiceTest） |
+| 文档 | 品类专题 | + Guard + 先搜后答 + 本文总览 |
 
 一句话：
 

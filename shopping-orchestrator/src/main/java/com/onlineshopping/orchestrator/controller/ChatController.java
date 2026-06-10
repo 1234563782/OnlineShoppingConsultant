@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.onlineshopping.orchestrator.auth.AuthSupport;
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
 import com.onlineshopping.orchestrator.dto.ChatRequest;
+import com.onlineshopping.orchestrator.dto.PrefetchedSearchResult;
 import com.onlineshopping.orchestrator.dto.TurnDecision;
 import com.onlineshopping.orchestrator.dto.TurnOutcome;
 import com.onlineshopping.orchestrator.service.LongTermMemoryWriteService;
@@ -153,7 +154,8 @@ public class ChatController {
                 request.getMessage(),
                 prepared.userId(),
                 resolvedConstraints(prepared.effectiveContext()),
-                prepared.turnDecision().categoryReplaced()
+                prepared.turnDecision().categoryReplaced(),
+                prepared.prefetchedSearch()
         );
         String agentThreadId = agentThreadId(prepared);
         RunnableConfig runnableConfig = RunnableConfig.builder()
@@ -258,6 +260,9 @@ public class ChatController {
         debug.put("effectiveContext", prepared.effectiveContext());
         debug.put("categoryResolution", prepared.categoryResolution().toDebugMap());
         debug.put("stateDebug", prepared.stateDebug());
+        if (prepared.prefetchedSearch() != null) {
+            debug.put("prefetchedSearch", prepared.prefetchedSearch().toDebugMap());
+        }
         return debug;
     }
 
@@ -345,15 +350,70 @@ public class ChatController {
             String message,
             String userId,
             Map<String, Object> resolvedConstraints,
-            boolean categoryReplaced
+            boolean categoryReplaced,
+            PrefetchedSearchResult prefetchedSearch
     ) {
+        if (prefetchedSearch != null && prefetchedSearch.isUsable()) {
+            return buildPrefetchedUserInput(message, userId, resolvedConstraints, categoryReplaced, prefetchedSearch);
+        }
+        return buildLegacySearchUserInput(message, userId, resolvedConstraints, categoryReplaced, prefetchedSearch);
+    }
+
+    private String buildPrefetchedUserInput(
+            String message,
+            String userId,
+            Map<String, Object> resolvedConstraints,
+            boolean categoryReplaced,
+            PrefetchedSearchResult prefetchedSearch
+    ) {
+        String categorySwitchNotice = categoryReplaced
+                ? "【本轮品类已切换】必须以 prefetchedSearchResult 中的最新商品结果作答，禁止沿用上一轮品类或旧推荐。\n"
+                : "";
+        return """
+                请你作为导购咨询子Agent，基于结构化上下文回答。
+                直接输出给用户看的自然语言回复，不要 JSON、不要 markdown、不要代码块。
+                %s规则：
+                1. resolvedConstraints 是主Agent已经整理好的本次咨询约束；会话内表达优先于历史画像。
+                2. 系统已在 Orchestrator 侧完成商品搜索，结果见 prefetchedSearchResult；禁止调用 searchProduct，禁止自行换搜索条件或重新搜索。
+                3. 只能推荐 prefetchedSearchResult.products 里的商品；名称、价格必须与字段完全一致，禁止编造未返回的型号或改写价格（禁止“约/大概”）。
+                4. 若 products 不足 3 款，只推荐实际返回的数量，禁止凑数编造；若 products 为空，如实说明目录暂无匹配，不要虚构候选。
+                5. 必须如实解释 prefetchedSearchResult.matchType 和 message，不要假装精确命中。
+                6. 你是推荐执行者，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须基于 prefetchedSearchResult 给出具体推荐或说明无货。
+                7. 如果预算缺失或用户说“先看看”，按 prefetchedSearchResult 返回的候选解释不同价位；如果场景缺失，按通用需求假设推荐并说明假设。
+                8. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
+                9. 如需补充库存或优惠，可基于 prefetchedSearchResult.products 里的 skuId 调用 getProductDetail / checkInventory / getPromotions。
+                                
+                userId: %s
+                userMessage: %s
+                resolvedConstraints: %s
+                prefetchedSearchResult: %s
+                """.formatted(
+                categorySwitchNotice,
+                userId,
+                message,
+                resolvedConstraints,
+                prefetchedSearchPayload(prefetchedSearch)
+        );
+    }
+
+    private String buildLegacySearchUserInput(
+            String message,
+            String userId,
+            Map<String, Object> resolvedConstraints,
+            boolean categoryReplaced,
+            PrefetchedSearchResult prefetchedSearch
+    ) {
+        String prefetchNotice = prefetchedSearch != null
+                && PrefetchedSearchResult.STATUS_UNAVAILABLE.equals(prefetchedSearch.status())
+                ? "【预搜索失败】可按 resolvedConstraints 调用 searchProduct 作为降级。\n"
+                : "";
         String categorySwitchNotice = categoryReplaced
                 ? "【本轮品类已切换】必须以 resolvedConstraints 中的最新 categoryId 重新调用 searchProduct，禁止沿用上一轮品类或旧搜索结果。\n"
                 : "";
         return """
                 请你作为导购咨询子Agent，基于结构化上下文回答。
                 直接输出给用户看的自然语言回复，不要 JSON、不要 markdown、不要代码块。
-                %s规则：
+                %s%s规则：
                 1. resolvedConstraints 是主Agent已经整理好的本次咨询约束，以它为准执行；会话内表达优先于历史画像。
                 2. 调用 searchProduct 时必须优先传 resolvedConstraints.categoryId；仅当 categoryId 为空时才传 categoryRaw。
                 3. 若 resolvedConstraints.searchHints.brandKeyword 非空，必须原样传入 searchProduct 的 keyword 参数；预算用 searchHints.budget 的 min/max。
@@ -369,7 +429,17 @@ public class ChatController {
                 userId: %s
                 userMessage: %s
                 resolvedConstraints: %s
-                """.formatted(categorySwitchNotice, userId, message, resolvedConstraints);
+                """.formatted(prefetchNotice, categorySwitchNotice, userId, message, resolvedConstraints);
+    }
+
+    private Map<String, Object> prefetchedSearchPayload(PrefetchedSearchResult prefetchedSearch) {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("status", prefetchedSearch.status());
+        payload.put("matchType", prefetchedSearch.matchType());
+        payload.put("message", prefetchedSearch.message());
+        payload.put("products", prefetchedSearch.products());
+        payload.put("searchParams", prefetchedSearch.searchParams());
+        return payload;
     }
 
     private boolean isInvalidReply(String reply) {

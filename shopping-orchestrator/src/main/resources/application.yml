@@ -38,6 +38,7 @@ shopping:
   catalog:
     base-url: ${SHOPPING_CATALOG_BASE_URL:http://localhost:8083}
     confidence-threshold: ${SHOPPING_CATALOG_CONFIDENCE_THRESHOLD:0.85}
+    search-limit: ${SHOPPING_CATALOG_SEARCH_LIMIT:5}
   session:
     ttl-days: 7
     max-turns: 10

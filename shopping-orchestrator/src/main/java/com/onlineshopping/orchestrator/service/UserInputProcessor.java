@@ -2,6 +2,7 @@ package com.onlineshopping.orchestrator.service;
 
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
 import com.onlineshopping.orchestrator.dto.MemoryRecallResult;
+import com.onlineshopping.orchestrator.dto.PrefetchedSearchResult;
 import com.onlineshopping.orchestrator.dto.SessionProcessResult;
 import com.onlineshopping.orchestrator.dto.SessionState;
 import com.onlineshopping.orchestrator.dto.SlotProcessResult;
@@ -24,6 +25,7 @@ public class UserInputProcessor {
     private final TurnOutcomeResolver turnOutcomeResolver;
     private final ClarificationBuilder clarificationBuilder;
     private final MemoryRecallExcludePlanner memoryRecallExcludePlanner;
+    private final CatalogSearchPrefetchService catalogSearchPrefetchService;
 
     public UserInputProcessor(
             SessionStoreService sessionStoreService,
@@ -31,7 +33,8 @@ public class UserInputProcessor {
             SessionStateMachine sessionStateMachine,
             TurnOutcomeResolver turnOutcomeResolver,
             ClarificationBuilder clarificationBuilder,
-            MemoryRecallExcludePlanner memoryRecallExcludePlanner
+            MemoryRecallExcludePlanner memoryRecallExcludePlanner,
+            CatalogSearchPrefetchService catalogSearchPrefetchService
     ) {
         this.sessionStoreService = sessionStoreService;
         this.memoryClientService = memoryClientService;
@@ -39,6 +42,7 @@ public class UserInputProcessor {
         this.turnOutcomeResolver = turnOutcomeResolver;
         this.clarificationBuilder = clarificationBuilder;
         this.memoryRecallExcludePlanner = memoryRecallExcludePlanner;
+        this.catalogSearchPrefetchService = catalogSearchPrefetchService;
     }
 
     public ChatPreparedContext process(String userId, String sessionId, String message) {
@@ -71,6 +75,8 @@ public class UserInputProcessor {
 
         sessionStoreService.saveSession(userId, resolvedSessionId, sessionState);
 
+        PrefetchedSearchResult prefetchedSearch = prefetchSearchIfNeeded(decision, processed, message);
+
         return new ChatPreparedContext(
                 userId,
                 resolvedSessionId,
@@ -82,8 +88,20 @@ public class UserInputProcessor {
                 processed.intentType(),
                 processed.categoryResolution(),
                 processed.stateDebug(),
-                decision
+                decision,
+                prefetchedSearch
         );
+    }
+
+    private PrefetchedSearchResult prefetchSearchIfNeeded(
+            TurnDecision decision,
+            SessionProcessResult processed,
+            String message
+    ) {
+        if (decision.outcome() != TurnOutcome.READY_FOR_AGENT) {
+            return PrefetchedSearchResult.skipped();
+        }
+        return catalogSearchPrefetchService.prefetch(processed.effectiveContext(), message);
     }
 
     private Map<String, Object> memoryDebug(MemoryRecallResult recallResult) {

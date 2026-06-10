@@ -155,6 +155,7 @@ public class ContextMergeService {
         merged.remove(SessionContextKeys.MUST_HAVE);
         merged.remove(SessionContextKeys.PENDING_FIELD);
         merged.remove(SessionContextKeys.PENDING_QUESTION);
+        merged.remove(SessionContextKeys.RECALLED_MEMORY_KEYS);
 
         List<String> askedFields = new ArrayList<>(normalizeList(merged.get(SessionContextKeys.ASKED_FIELDS)));
         askedFields.remove("categoryConfirm");

@@ -14,6 +14,12 @@ import java.util.Map;
 @Service
 public class ConstraintResolver {
 
+    private final BrandSearchKeywordResolver brandSearchKeywordResolver;
+
+    public ConstraintResolver(BrandSearchKeywordResolver brandSearchKeywordResolver) {
+        this.brandSearchKeywordResolver = brandSearchKeywordResolver;
+    }
+
     public Map<String, Object> resolve(
             Map<String, Object> sessionContext,
             Map<String, Object> longTermProfile,
@@ -54,7 +60,24 @@ public class ConstraintResolver {
             applyProfilePreferenceFallback(resolved, profile, session);
         }
 
+        attachSearchHints(resolved);
         return resolved;
+    }
+
+    private void attachSearchHints(Map<String, Object> resolved) {
+        Map<String, Object> hints = new HashMap<>();
+        brandSearchKeywordResolver.resolve(resolved).ifPresent(keyword -> hints.put("brandKeyword", keyword));
+        Object budget = resolved.get("budget");
+        if (budget instanceof Map<?, ?> budgetMap) {
+            hints.put("budget", budgetMap);
+        }
+        hints.put(
+                "fallbackPolicy",
+                "有品牌时：先同品牌同预算，再同品牌其他价位，再无品牌同价位，最后同品类其他价位；无品牌时：先同品类同预算，再同品类其他价位"
+        );
+        if (!hints.isEmpty()) {
+            resolved.put("searchHints", hints);
+        }
     }
 
     private void applyProfilePreferenceFallback(

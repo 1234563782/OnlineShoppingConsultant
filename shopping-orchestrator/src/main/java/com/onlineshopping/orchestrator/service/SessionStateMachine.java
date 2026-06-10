@@ -3,11 +3,11 @@ package com.onlineshopping.orchestrator.service;
 import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
 import com.onlineshopping.orchestrator.dto.MergeSessionResult;
 import com.onlineshopping.orchestrator.dto.SessionProcessResult;
+import com.onlineshopping.orchestrator.dto.SlotProcessResult;
 import com.onlineshopping.orchestrator.support.SessionContextKeys;
 import com.onlineshopping.orchestrator.support.SessionContextSupport;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,6 +21,7 @@ public class SessionStateMachine {
     private final CategoryPatchNormalizer categoryPatchNormalizer;
     private final CategoryIntentDetector categoryIntentDetector;
     private final CategoryPatchGuard categoryPatchGuard;
+    private final BrandIntentDetector brandIntentDetector;
     private final ContextMergeService contextMergeService;
     private final CategoryResolutionService categoryResolutionService;
 
@@ -29,6 +30,7 @@ public class SessionStateMachine {
             CategoryPatchNormalizer categoryPatchNormalizer,
             CategoryIntentDetector categoryIntentDetector,
             CategoryPatchGuard categoryPatchGuard,
+            BrandIntentDetector brandIntentDetector,
             ContextMergeService contextMergeService,
             CategoryResolutionService categoryResolutionService
     ) {
@@ -36,6 +38,7 @@ public class SessionStateMachine {
         this.categoryPatchNormalizer = categoryPatchNormalizer;
         this.categoryIntentDetector = categoryIntentDetector;
         this.categoryPatchGuard = categoryPatchGuard;
+        this.brandIntentDetector = brandIntentDetector;
         this.contextMergeService = contextMergeService;
         this.categoryResolutionService = categoryResolutionService;
     }
@@ -45,6 +48,11 @@ public class SessionStateMachine {
             Map<String, Object> currentSessionContext,
             Map<String, Object> profile
     ) {
+        SlotProcessResult slots = processSlots(userMessage, currentSessionContext);
+        return finalizeWithProfile(slots, profile, Map.of());
+    }
+
+    public SlotProcessResult processSlots(String userMessage, Map<String, Object> currentSessionContext) {
         Map<String, Object> sessionBefore = snapshotCategoryFields(currentSessionContext);
         String pendingField = pendingField(currentSessionContext);
         Map<String, Object> extractedPatch = pendingField == null
@@ -55,6 +63,7 @@ public class SessionStateMachine {
         categoryPatchNormalizer.normalize(userMessage, currentSessionContext, extractedPatch);
         categoryIntentDetector.reconcileCategoryPatch(userMessage, currentSessionContext, extractedPatch);
         categoryPatchGuard.removeUnsupportedCategoryReplace(userMessage, currentSessionContext, extractedPatch);
+        brandIntentDetector.reconcileBrandPatch(userMessage, extractedPatch);
 
         MergeSessionResult mergeResult = contextMergeService.mergeSessionPatch(
                 currentSessionContext,
@@ -66,9 +75,25 @@ public class SessionStateMachine {
         applyCategoryConfirmation(userMessage, pendingField, sessionContext);
 
         CategoryResolutionResult categoryResolution = categoryResolutionService.resolve(sessionContext);
+        return new SlotProcessResult(
+                sessionBefore,
+                extractedPatch,
+                sessionContext,
+                categoryResolution,
+                mergeResult.categoryReplaced(),
+                mergeResult.categoryReplaceReason()
+        );
+    }
+
+    public SessionProcessResult finalizeWithProfile(
+            SlotProcessResult slots,
+            Map<String, Object> profile,
+            Map<String, Object> memoryDebug
+    ) {
+        Map<String, Object> sessionContext = slots.sessionContext();
         Map<String, Object> effectiveContext = contextMergeService.buildEffectiveContext(
                 sessionContext,
-                profile,
+                profile == null ? Map.of() : profile,
                 true
         );
         effectiveContext.put(
@@ -81,21 +106,23 @@ public class SessionStateMachine {
 
         String intentType = String.valueOf(effectiveContext.getOrDefault(SessionContextKeys.INTENT_TYPE, "shopping"));
         Map<String, Object> stateDebug = buildStateDebug(
-                sessionBefore,
+                slots.sessionBefore(),
                 sessionContext,
-                extractedPatch,
-                mergeResult,
-                effectiveContext
+                slots.extractedPatch(),
+                slots.categoryReplaced(),
+                slots.categoryReplaceReason(),
+                effectiveContext,
+                memoryDebug
         );
 
         return new SessionProcessResult(
-                extractedPatch,
+                slots.extractedPatch(),
                 sessionContext,
                 effectiveContext,
                 intentType,
-                categoryResolution,
-                mergeResult.categoryReplaced(),
-                mergeResult.categoryReplaceReason(),
+                slots.categoryResolution(),
+                slots.categoryReplaced(),
+                slots.categoryReplaceReason(),
                 stateDebug
         );
     }
@@ -104,16 +131,21 @@ public class SessionStateMachine {
             Map<String, Object> sessionBefore,
             Map<String, Object> sessionAfter,
             Map<String, Object> extractedPatch,
-            MergeSessionResult mergeResult,
-            Map<String, Object> effectiveContext
+            boolean categoryReplaced,
+            String categoryReplaceReason,
+            Map<String, Object> effectiveContext,
+            Map<String, Object> memoryDebug
     ) {
         Map<String, Object> debug = new LinkedHashMap<>();
         debug.put("extractedPatch", extractedPatch);
-        debug.put("categoryReplaced", mergeResult.categoryReplaced());
-        debug.put("categoryReplaceReason", mergeResult.categoryReplaceReason() == null ? "" : mergeResult.categoryReplaceReason());
+        debug.put("categoryReplaced", categoryReplaced);
+        debug.put("categoryReplaceReason", categoryReplaceReason == null ? "" : categoryReplaceReason);
         debug.put("resolvedConstraints", effectiveContext.get("resolvedConstraints"));
         debug.put("sessionContextBefore", sessionBefore);
         debug.put("sessionContextAfter", snapshotCategoryFields(sessionAfter));
+        if (memoryDebug != null && !memoryDebug.isEmpty()) {
+            debug.put("memoryRecall", memoryDebug);
+        }
         return debug;
     }
 

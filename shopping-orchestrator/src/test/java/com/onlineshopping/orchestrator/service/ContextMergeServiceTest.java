@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ContextMergeServiceTest {
 
     private final ContextMergeService contextMergeService = new ContextMergeService(
-            new ConstraintResolver(),
+            new ConstraintResolver(new BrandSearchKeywordResolver()),
             new AlwaysDifferentCategoryEquivalenceChecker()
     );
 

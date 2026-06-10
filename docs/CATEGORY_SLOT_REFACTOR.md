@@ -488,8 +488,22 @@ shopping-orchestrator/.../orchestrator/
 
 ---
 
-## 18. 后续可扩展（未做）
+## 18. 第四～五轮改造（记忆 + 品牌搜索）
+
+第三轮（Guard）之后，继续落地：
+
+- **记忆工程 P1**：分段 recall、session 去重 exclude、MemoryWriteFilter 写入门控  
+- **品牌搜索分层兜底**：`ProductSearchFallback`、`BrandIntentDetector`、`searchHints`  
+- **单测与配置**：orchestrator 8 个测试类、`recall-top-k` 等  
+
+完整变更总览见 **[SESSION_MEMORY_SEARCH_REFACTOR.md](./SESSION_MEMORY_SEARCH_REFACTOR.md)**。
+
+---
+
+## 19. 后续可扩展（未做）
 
 - 换品类时是否保留 budget 做成可配置策略  
 - 类目列表缓存，减少子串 normalize 调用  
+- `ProductReplyValidator`（防 Agent 编造库外商品）  
+- Orchestrator 先搜后答  
 - `sessionContext` 强类型化  

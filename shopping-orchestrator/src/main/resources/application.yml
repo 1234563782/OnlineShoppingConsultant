@@ -34,6 +34,7 @@ spring:
 shopping:
   memory:
     base-url: ${SHOPPING_MEMORY_BASE_URL:http://localhost:8086}
+    recall-top-k: ${SHOPPING_MEMORY_RECALL_TOP_K:5}
   catalog:
     base-url: ${SHOPPING_CATALOG_BASE_URL:http://localhost:8083}
     confidence-threshold: ${SHOPPING_CATALOG_CONFIDENCE_THRESHOLD:0.85}

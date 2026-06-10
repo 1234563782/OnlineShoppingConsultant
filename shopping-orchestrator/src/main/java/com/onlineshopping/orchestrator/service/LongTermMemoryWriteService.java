@@ -12,17 +12,20 @@ public class LongTermMemoryWriteService {
     private final MemoryMergeService memoryMergeService;
     private final ProfileReconcileService profileReconcileService;
     private final MemoryClientService memoryClientService;
+    private final MemoryWriteFilter memoryWriteFilter;
 
     public LongTermMemoryWriteService(
             ContextMergeService contextMergeService,
             MemoryMergeService memoryMergeService,
             ProfileReconcileService profileReconcileService,
-            MemoryClientService memoryClientService
+            MemoryClientService memoryClientService,
+            MemoryWriteFilter memoryWriteFilter
     ) {
         this.contextMergeService = contextMergeService;
         this.memoryMergeService = memoryMergeService;
         this.profileReconcileService = profileReconcileService;
         this.memoryClientService = memoryClientService;
+        this.memoryWriteFilter = memoryWriteFilter;
     }
 
     public WriteResult write(
@@ -32,14 +35,23 @@ public class LongTermMemoryWriteService {
             Map<String, Object> existingProfile,
             String userMessage
     ) {
-        Map<String, Object> extractionPatch = contextMergeService.toLongTermMemoryPatch(extractedPatch);
-        Map<String, Object> sessionPatch = memoryMergeService.deriveSessionPreferencePatch(
-                effectiveContext,
-                extractedPatch,
-                existingProfile,
-                userMessage
+        Map<String, Object> extractionPatch = memoryWriteFilter.filter(
+                contextMergeService.toLongTermMemoryPatch(extractedPatch),
+                userMessage,
+                true
+        );
+        Map<String, Object> sessionPatch = memoryWriteFilter.filter(
+                memoryMergeService.deriveSessionPreferencePatch(
+                        effectiveContext,
+                        extractedPatch,
+                        existingProfile,
+                        userMessage
+                ),
+                userMessage,
+                false
         );
         Map<String, Object> mergedPatch = memoryMergeService.mergeForProfile(extractionPatch, sessionPatch);
+        mergedPatch = memoryWriteFilter.filter(mergedPatch, userMessage, !extractionPatch.isEmpty());
         boolean shouldReconcile = ProfileListNormalizer.hasPreferenceIncoming(mergedPatch)
                 || memoryMergeService.sessionContradictsProfile(existingProfile, effectiveContext, userMessage);
 
@@ -53,7 +65,15 @@ public class LongTermMemoryWriteService {
             if (!ProfileListNormalizer.hasPreferenceIncoming(mergedPatch)) {
                 patchToWrite = sessionPatch;
             }
+            patchToWrite = memoryWriteFilter.filter(patchToWrite, userMessage, !extractionPatch.isEmpty());
+            if (patchToWrite.isEmpty()) {
+                return new WriteResult(extractionPatch, sessionPatch, mergedPatch, Map.of(), Map.of(), false);
+            }
             reconciledPatch = profileReconcileService.reconcile(existingProfile, patchToWrite, userMessage);
+            reconciledPatch = memoryWriteFilter.filter(reconciledPatch, userMessage, !extractionPatch.isEmpty());
+            if (reconciledPatch.isEmpty()) {
+                return new WriteResult(extractionPatch, sessionPatch, mergedPatch, Map.of(), Map.of(), false);
+            }
             memoryClientService.mergePatch(userId, reconciledPatch);
             return new WriteResult(extractionPatch, sessionPatch, mergedPatch, reconciledPatch, reconciledPatch, true);
         }

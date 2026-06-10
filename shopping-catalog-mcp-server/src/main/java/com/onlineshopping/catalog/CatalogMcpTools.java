@@ -3,6 +3,8 @@ package com.onlineshopping.catalog;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.onlineshopping.catalog.model.ProductEntity;
+import com.onlineshopping.catalog.search.ProductSearchFallback;
+import com.onlineshopping.catalog.search.ProductSearchFallback.SearchOutcome;
 import com.onlineshopping.catalog.service.CategoryService;
 import com.onlineshopping.catalog.service.CatalogService;
 import com.onlineshopping.catalog.vector.ProductEmbeddingService;
@@ -37,11 +39,11 @@ public class CatalogMcpTools {
         this.embeddingServiceProvider = embeddingServiceProvider;
     }
 
-    @Tool(name = "searchProduct", description = "根据标准类目或用户原始品类词、关键词、价格区间搜索商品候选；若无精确结果，会返回同品类其他价格段或其他品类替代候选")
+    @Tool(name = "searchProduct", description = "根据标准类目、品牌关键词、价格区间搜索商品；有品牌时先同品牌其他价位，再同价位其他品牌")
     public String searchProduct(
             @ToolParam(description = "标准类目ID，如 cat_phone；没有则为空") String categoryId,
             @ToolParam(description = "用户原始品类词，如智能电视/运动手表；没有则为空") String categoryRaw,
-            @ToolParam(description = "补充关键词，如品牌名/功能点；没有则为空") String keyword,
+            @ToolParam(description = "品牌或补充关键词，如小米/华为；没有则为空") String keyword,
             @ToolParam(description = "最低价，允许为空") Double minPrice,
             @ToolParam(description = "最高价，允许为空") Double maxPrice,
             @ToolParam(description = "返回条数上限，默认5") Integer limit,
@@ -50,41 +52,37 @@ public class CatalogMcpTools {
         int max = (limit == null || limit <= 0) ? 5 : Math.min(limit, 10);
         CategoryService.CategoryMatch category = resolveCategory(categoryId, categoryRaw);
         String normalizedCategoryId = category == null ? normalizeCategoryId(categoryId) : category.categoryId();
-        String searchKeyword = keyword == null || keyword.isBlank() ? null : keyword;
+        String searchKeyword = keyword == null || keyword.isBlank() ? null : keyword.trim();
+
+        if (searchKeyword != null) {
+            SearchOutcome outcome = ProductSearchFallback.search(
+                    catalogService,
+                    normalizedCategoryId,
+                    searchKeyword,
+                    minPrice,
+                    maxPrice,
+                    max
+            );
+            return toJson(outcome.matchType(), outcome.message(), category, outcome.products(), searchKeyword);
+        }
 
         List<ProductEntity> exact = tryVectorFirst(normalizedCategoryId, minPrice, maxPrice, semanticQuery, max);
         if (exact != null && !exact.isEmpty()) {
-            exact = mergeVectorWithMysql(exact, normalizedCategoryId, searchKeyword, minPrice, maxPrice, max);
-        } else {
-            exact = catalogService.search(normalizedCategoryId, searchKeyword, minPrice, maxPrice, max);
-        }
-        if (!exact.isEmpty()) {
-            return toJson("exact", "命中用户指定品类和预算范围。", category, exact);
+            exact = mergeVectorWithMysql(exact, normalizedCategoryId, null, minPrice, maxPrice, max);
+            return toJson("exact", "命中用户指定品类和预算范围。", category, exact, null);
         }
 
-        List<ProductEntity> sameCategoryOtherPrice = tryVectorFirst(normalizedCategoryId, null, null, semanticQuery, max);
-        if (sameCategoryOtherPrice != null && !sameCategoryOtherPrice.isEmpty()) {
-            sameCategoryOtherPrice = mergeVectorWithMysql(
-                    sameCategoryOtherPrice, normalizedCategoryId, searchKeyword, null, null, max);
-        } else {
-            sameCategoryOtherPrice = catalogService.search(normalizedCategoryId, searchKeyword, null, null, max);
-        }
-        if (!sameCategoryOtherPrice.isEmpty()) {
-            return toJson("same_keyword_other_price", "指定预算范围内没有命中，但找到了同品类的其他价格段商品。", category, sameCategoryOtherPrice);
-        }
-
-        List<ProductEntity> alternativeSameBudget = catalogService.search(null, searchKeyword, minPrice, maxPrice, max);
-        if (!alternativeSameBudget.isEmpty()) {
-            return toJson("alternative_category_same_budget", "当前目录没有该品类商品，返回预算范围内的其他品类替代候选。", category, alternativeSameBudget);
-        }
-
-        List<ProductEntity> alternatives = catalogService.search(null, null, null, null, max);
-        return toJson("alternative_category_any_price", "当前目录没有该品类商品，且预算范围内也没有替代候选，返回其他品类商品供参考。", category, alternatives);
+        SearchOutcome outcome = ProductSearchFallback.search(
+                catalogService,
+                normalizedCategoryId,
+                null,
+                minPrice,
+                maxPrice,
+                max
+        );
+        return toJson(outcome.matchType(), outcome.message(), category, outcome.products(), null);
     }
 
-    /**
-     * When vector search is enabled and semanticQuery is set, order by embedding within category (+ optional price).
-     */
     private List<ProductEntity> tryVectorFirst(
             String normalizedCategoryId,
             Double minPrice,
@@ -104,9 +102,6 @@ public class CatalogMcpTools {
         return list.isEmpty() ? null : list;
     }
 
-    /**
-     * 向量结果排在前面；不足 {@code max} 时用同一套 MySQL 条件补全（去重），避免只索引了部分 SKU 时结果过少。
-     */
     private List<ProductEntity> mergeVectorWithMysql(
             List<ProductEntity> vectorFirst,
             String normalizedCategoryId,
@@ -156,11 +151,20 @@ public class CatalogMcpTools {
         return categoryId == null || categoryId.isBlank() ? null : categoryId.trim();
     }
 
-    private String toJson(String matchType, String message, CategoryService.CategoryMatch category, List<ProductEntity> products) {
+    private String toJson(
+            String matchType,
+            String message,
+            CategoryService.CategoryMatch category,
+            List<ProductEntity> products,
+            String brandKeyword
+    ) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("matchType", matchType);
         result.put("message", message);
         result.put("categoryNormalization", category == null ? Map.of() : categoryMap(category));
+        if (brandKeyword != null && !brandKeyword.isBlank()) {
+            result.put("brandKeyword", brandKeyword);
+        }
         result.put("products", products.stream().map(this::toProductMap).toList());
         try {
             return objectMapper.writeValueAsString(result);

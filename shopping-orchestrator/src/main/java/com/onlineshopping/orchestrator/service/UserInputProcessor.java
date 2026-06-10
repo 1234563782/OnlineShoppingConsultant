@@ -1,12 +1,17 @@
 package com.onlineshopping.orchestrator.service;
 
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
+import com.onlineshopping.orchestrator.dto.MemoryRecallResult;
 import com.onlineshopping.orchestrator.dto.SessionProcessResult;
 import com.onlineshopping.orchestrator.dto.SessionState;
+import com.onlineshopping.orchestrator.dto.SlotProcessResult;
 import com.onlineshopping.orchestrator.dto.TurnDecision;
 import com.onlineshopping.orchestrator.dto.TurnOutcome;
+import com.onlineshopping.orchestrator.support.MemoryRecallSupport;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -18,30 +23,39 @@ public class UserInputProcessor {
     private final SessionStateMachine sessionStateMachine;
     private final TurnOutcomeResolver turnOutcomeResolver;
     private final ClarificationBuilder clarificationBuilder;
+    private final MemoryRecallExcludePlanner memoryRecallExcludePlanner;
 
     public UserInputProcessor(
             SessionStoreService sessionStoreService,
             MemoryClientService memoryClientService,
             SessionStateMachine sessionStateMachine,
             TurnOutcomeResolver turnOutcomeResolver,
-            ClarificationBuilder clarificationBuilder
+            ClarificationBuilder clarificationBuilder,
+            MemoryRecallExcludePlanner memoryRecallExcludePlanner
     ) {
         this.sessionStoreService = sessionStoreService;
         this.memoryClientService = memoryClientService;
         this.sessionStateMachine = sessionStateMachine;
         this.turnOutcomeResolver = turnOutcomeResolver;
         this.clarificationBuilder = clarificationBuilder;
+        this.memoryRecallExcludePlanner = memoryRecallExcludePlanner;
     }
 
     public ChatPreparedContext process(String userId, String sessionId, String message) {
         String resolvedSessionId = resolveSessionId(sessionId);
         SessionState sessionState = sessionStoreService.getSession(userId, resolvedSessionId);
-        Map<String, Object> profile = memoryClientService.recall(userId, message);
+        Map<String, Object> sessionContext = sessionState.getSessionContext();
 
-        SessionProcessResult processed = sessionStateMachine.process(
-                message,
-                sessionState.getSessionContext(),
-                profile
+        SlotProcessResult slots = sessionStateMachine.processSlots(message, sessionContext);
+        List<String> excludeKeys = memoryRecallExcludePlanner.plan(slots.sessionContext());
+        MemoryRecallResult recallResult = memoryClientService.recall(userId, message, excludeKeys);
+
+        MemoryRecallSupport.storeRecalledKeys(slots.sessionContext(), recallResult.recalledKeys());
+        Map<String, Object> memoryDebug = memoryDebug(recallResult);
+        SessionProcessResult processed = sessionStateMachine.finalizeWithProfile(
+                slots,
+                recallResult.profileSegments(),
+                memoryDebug
         );
         sessionState.setSessionContext(processed.sessionContext());
 
@@ -61,7 +75,7 @@ public class UserInputProcessor {
                 userId,
                 resolvedSessionId,
                 sessionState,
-                profile,
+                recallResult.profileSegments(),
                 processed.extractedPatch(),
                 processed.sessionContext(),
                 processed.effectiveContext(),
@@ -70,6 +84,14 @@ public class UserInputProcessor {
                 processed.stateDebug(),
                 decision
         );
+    }
+
+    private Map<String, Object> memoryDebug(MemoryRecallResult recallResult) {
+        Map<String, Object> debug = new LinkedHashMap<>();
+        debug.put("excludeKeys", recallResult.excludeKeys());
+        debug.put("recalledKeys", recallResult.recalledKeys());
+        debug.put("segmentFields", recallResult.profileSegments().keySet());
+        return debug;
     }
 
     private String resolveSessionId(String sessionId) {

@@ -21,6 +21,7 @@ public final class SessionContextKeys {
     public static final String PENDING_FIELD = "pendingField";
     public static final String PENDING_QUESTION = "pendingQuestion";
     public static final String ASKED_FIELDS = "askedFields";
+    public static final String RECALLED_MEMORY_KEYS = "recalledMemoryKeys";
 
     /**
      * Scratchpad fields: session-scoped slots written only by the orchestrator.
@@ -41,7 +42,8 @@ public final class SessionContextKeys {
             MUST_HAVE,
             PENDING_FIELD,
             PENDING_QUESTION,
-            ASKED_FIELDS
+            ASKED_FIELDS,
+            RECALLED_MEMORY_KEYS
     );
 
     private SessionContextKeys() {

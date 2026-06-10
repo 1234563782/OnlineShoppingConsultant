@@ -1,5 +1,7 @@
 package com.onlineshopping.memory.controller;
 
+import com.onlineshopping.memory.dto.MemoryRecallRequest;
+import com.onlineshopping.memory.dto.MemoryRecallResponse;
 import com.onlineshopping.memory.dto.MemoryResponse;
 import com.onlineshopping.memory.dto.MemoryUpdateRequest;
 import com.onlineshopping.memory.service.UserMemoryService;
@@ -7,6 +9,7 @@ import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -25,6 +28,14 @@ public class MemoryController {
     @GetMapping("/{userId}")
     public MemoryResponse getByUserId(@PathVariable String userId) {
         return userMemoryService.getByUserId(userId);
+    }
+
+    @PostMapping("/{userId}/recall")
+    public MemoryRecallResponse recall(
+            @PathVariable String userId,
+            @RequestBody(required = false) MemoryRecallRequest request
+    ) {
+        return userMemoryService.recall(userId, request == null ? new MemoryRecallRequest() : request);
     }
 
     @PutMapping("/{userId}")

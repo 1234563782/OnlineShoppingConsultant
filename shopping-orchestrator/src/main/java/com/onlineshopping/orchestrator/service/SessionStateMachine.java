@@ -20,6 +20,7 @@ public class SessionStateMachine {
     private final ContextExtractionService contextExtractionService;
     private final CategoryPatchNormalizer categoryPatchNormalizer;
     private final CategoryIntentDetector categoryIntentDetector;
+    private final CategoryPatchGuard categoryPatchGuard;
     private final ContextMergeService contextMergeService;
     private final CategoryResolutionService categoryResolutionService;
 
@@ -27,12 +28,14 @@ public class SessionStateMachine {
             ContextExtractionService contextExtractionService,
             CategoryPatchNormalizer categoryPatchNormalizer,
             CategoryIntentDetector categoryIntentDetector,
+            CategoryPatchGuard categoryPatchGuard,
             ContextMergeService contextMergeService,
             CategoryResolutionService categoryResolutionService
     ) {
         this.contextExtractionService = contextExtractionService;
         this.categoryPatchNormalizer = categoryPatchNormalizer;
         this.categoryIntentDetector = categoryIntentDetector;
+        this.categoryPatchGuard = categoryPatchGuard;
         this.contextMergeService = contextMergeService;
         this.categoryResolutionService = categoryResolutionService;
     }
@@ -51,6 +54,7 @@ public class SessionStateMachine {
 
         categoryPatchNormalizer.normalize(userMessage, currentSessionContext, extractedPatch);
         categoryIntentDetector.reconcileCategoryPatch(userMessage, currentSessionContext, extractedPatch);
+        categoryPatchGuard.removeUnsupportedCategoryReplace(userMessage, currentSessionContext, extractedPatch);
 
         MergeSessionResult mergeResult = contextMergeService.mergeSessionPatch(
                 currentSessionContext,
@@ -90,6 +94,8 @@ public class SessionStateMachine {
                 effectiveContext,
                 intentType,
                 categoryResolution,
+                mergeResult.categoryReplaced(),
+                mergeResult.categoryReplaceReason(),
                 stateDebug
         );
     }

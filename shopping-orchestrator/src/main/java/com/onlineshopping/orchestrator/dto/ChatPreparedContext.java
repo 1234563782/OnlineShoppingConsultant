@@ -12,6 +12,7 @@ public record ChatPreparedContext(
         Map<String, Object> effectiveContext,
         String intentType,
         CategoryResolutionResult categoryResolution,
-        Map<String, Object> stateDebug
+        Map<String, Object> stateDebug,
+        TurnDecision turnDecision
 ) {
 }

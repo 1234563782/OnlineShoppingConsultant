@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -36,6 +37,29 @@ public class MemoryClientService {
             return (Map<String, Object>) profileJson;
         } catch (Exception e) {
             return new HashMap<>();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> recall(String userId, String query) {
+        try {
+            Map<String, Object> body = new HashMap<>();
+            body.put("query", query == null ? "" : query);
+            body.put("topK", 5);
+            body.put("excludeKeys", List.of());
+
+            Map<String, Object> response = restTemplate.postForObject(
+                    memoryBaseUrl + "/api/v1/memory/{userId}/recall",
+                    body,
+                    Map.class,
+                    userId
+            );
+            if (response == null || !(response.get("profileSegments") instanceof Map<?, ?> segments)) {
+                return getProfile(userId);
+            }
+            return (Map<String, Object>) segments;
+        } catch (Exception e) {
+            return getProfile(userId);
         }
     }
 

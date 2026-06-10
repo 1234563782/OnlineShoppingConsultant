@@ -31,7 +31,7 @@ public class CategoryPatchNormalizer {
         }
         extractedPatch.put(SessionContextKeys.INTENT_TYPE, "shopping");
         if (!SessionContextSupport.hasValue(extractedPatch.get(SessionContextKeys.CATEGORY_SOURCE))) {
-            extractedPatch.put(SessionContextKeys.CATEGORY_SOURCE, "llm");
+            extractedPatch.put(SessionContextKeys.CATEGORY_SOURCE, SessionContextKeys.CATEGORY_SOURCE_LLM);
         }
     }
 }

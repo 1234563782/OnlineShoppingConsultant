@@ -6,16 +6,15 @@ import com.alibaba.cloud.ai.graph.agent.flow.agent.LlmRoutingAgent;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.onlineshopping.orchestrator.auth.AuthSupport;
-import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
 import com.onlineshopping.orchestrator.dto.ChatRequest;
-import com.onlineshopping.orchestrator.dto.SessionState;
-import com.onlineshopping.orchestrator.dto.SessionProcessResult;
+import com.onlineshopping.orchestrator.dto.TurnDecision;
+import com.onlineshopping.orchestrator.dto.TurnOutcome;
 import com.onlineshopping.orchestrator.service.LongTermMemoryWriteService;
-import com.onlineshopping.orchestrator.service.MemoryClientService;
-import com.onlineshopping.orchestrator.service.SessionStateMachine;
 import com.onlineshopping.orchestrator.service.SessionStoreService;
+import com.onlineshopping.orchestrator.service.UserInputProcessor;
 import com.onlineshopping.orchestrator.support.PlainTextStreamBuffer;
+import com.onlineshopping.orchestrator.support.SessionContextKeys;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
@@ -28,11 +27,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -42,23 +39,20 @@ public class ChatController {
 
     private final LlmRoutingAgent supervisorAgent;
     private final SessionStoreService sessionStoreService;
-    private final MemoryClientService memoryClientService;
-    private final SessionStateMachine sessionStateMachine;
+    private final UserInputProcessor userInputProcessor;
     private final LongTermMemoryWriteService longTermMemoryWriteService;
     private final ObjectMapper objectMapper;
 
     public ChatController(
             @Qualifier("supervisorAgentBean") LlmRoutingAgent supervisorAgent,
             SessionStoreService sessionStoreService,
-            MemoryClientService memoryClientService,
-            SessionStateMachine sessionStateMachine,
+            UserInputProcessor userInputProcessor,
             LongTermMemoryWriteService longTermMemoryWriteService,
             ObjectMapper objectMapper
     ) {
         this.supervisorAgent = supervisorAgent;
         this.sessionStoreService = sessionStoreService;
-        this.memoryClientService = memoryClientService;
-        this.sessionStateMachine = sessionStateMachine;
+        this.userInputProcessor = userInputProcessor;
         this.longTermMemoryWriteService = longTermMemoryWriteService;
         this.objectMapper = objectMapper;
     }
@@ -68,54 +62,78 @@ public class ChatController {
         final String userId = AuthSupport.requireUserId();
         return Flux.defer(() -> {
             try {
-                String sessionId = resolveSessionId(request.getSessionId());
-                ChatPreparedContext prepared = prepareContext(userId, request, sessionId);
-
-                if (isSmallTalkOrNonShopping(prepared.intentType())) {
-                    String reply = buildSmallTalkReply(request.getMessage());
-                    sessionStoreService.appendTurns(userId, sessionId, prepared.sessionState(), request.getMessage(), reply);
-                    return streamStaticReply(
-                            sessionId,
-                            reply,
-                            Map.of(
-                                    "toolMode", "orchestrator_direct_reply",
-                                    "reason", prepared.intentType(),
-                                    "sessionContext", prepared.sessionContext()
-                            )
-                    );
-                }
-
-                String clarification = buildClarificationIfNeeded(prepared.effectiveContext());
-                if (clarification != null) {
-                    markAskedFields(prepared.sessionContext(), prepared.effectiveContext());
-                    markPendingField(prepared.sessionContext(), prepared.effectiveContext(), clarification);
-                    prepared.sessionState().setSessionContext(prepared.sessionContext());
-                    sessionStoreService.appendTurns(userId, sessionId, prepared.sessionState(), request.getMessage(), clarification);
-                    LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
-                            userId,
-                            prepared.extractedPatch(),
-                            prepared.effectiveContext(),
-                            prepared.profile(),
-                            request.getMessage()
-                    );
-                    Map<String, Object> debug = buildMemoryDebugMap(
-                            "orchestrator_clarify",
-                            Map.of(
-                                    "sessionContext", prepared.sessionContext(),
-                                    "effectiveContext", prepared.effectiveContext(),
-                                    "categoryResolution", prepared.categoryResolution().toDebugMap(),
-                                    "stateDebug", prepared.stateDebug()
-                            ),
-                            memoryWrite
-                    );
-                    return streamStaticReply(sessionId, clarification, debug);
-                }
-
-                return streamAgentReply(prepared, request);
+                ChatPreparedContext prepared = userInputProcessor.process(
+                        userId,
+                        request.getSessionId(),
+                        request.getMessage()
+                );
+                return dispatch(prepared, request);
             } catch (Exception e) {
                 return Flux.just(errorEvent(e.getMessage() == null ? "stream failed" : e.getMessage()));
             }
         });
+    }
+
+    private Flux<ServerSentEvent<String>> dispatch(ChatPreparedContext prepared, ChatRequest request) {
+        TurnDecision decision = prepared.turnDecision();
+        return switch (decision.outcome()) {
+            case SMALL_TALK, NON_SHOPPING -> streamDirectReply(
+                    prepared,
+                    request,
+                    decision.directReply(),
+                    "orchestrator_direct_reply",
+                    decision.outcome().name().toLowerCase()
+            );
+            case NEED_CLARIFICATION -> streamClarification(prepared, request, decision);
+            case READY_FOR_AGENT -> streamAgentReply(prepared, request);
+        };
+    }
+
+    private Flux<ServerSentEvent<String>> streamDirectReply(
+            ChatPreparedContext prepared,
+            ChatRequest request,
+            String reply,
+            String toolMode,
+            String reason
+    ) {
+        sessionStoreService.appendTurns(
+                prepared.userId(),
+                prepared.sessionId(),
+                prepared.sessionState(),
+                request.getMessage(),
+                reply
+        );
+        Map<String, Object> debug = baseTurnDebug(prepared, toolMode);
+        debug.put("reason", reason);
+        return streamStaticReply(prepared.sessionId(), reply, debug);
+    }
+
+    private Flux<ServerSentEvent<String>> streamClarification(
+            ChatPreparedContext prepared,
+            ChatRequest request,
+            TurnDecision decision
+    ) {
+        String clarification = decision.clarification();
+        sessionStoreService.appendTurns(
+                prepared.userId(),
+                prepared.sessionId(),
+                prepared.sessionState(),
+                request.getMessage(),
+                clarification
+        );
+        LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
+                prepared.userId(),
+                prepared.extractedPatch(),
+                prepared.effectiveContext(),
+                prepared.profile(),
+                request.getMessage()
+        );
+        Map<String, Object> debug = buildMemoryDebugMap(
+                "orchestrator_clarify",
+                baseTurnDebug(prepared, "orchestrator_clarify"),
+                memoryWrite
+        );
+        return streamStaticReply(prepared.sessionId(), clarification, debug);
     }
 
     private Flux<ServerSentEvent<String>> streamStaticReply(
@@ -130,23 +148,30 @@ public class ChatController {
         );
     }
 
-    private Flux<ServerSentEvent<String>> streamAgentReply(ChatPreparedContext prepared, ChatRequest request) throws Exception {
+    private Flux<ServerSentEvent<String>> streamAgentReply(ChatPreparedContext prepared, ChatRequest request) {
         String userInput = buildUserInput(
                 request.getMessage(),
                 prepared.userId(),
-                resolvedConstraints(prepared.effectiveContext())
+                resolvedConstraints(prepared.effectiveContext()),
+                prepared.turnDecision().categoryReplaced()
         );
+        String agentThreadId = agentThreadId(prepared);
         RunnableConfig runnableConfig = RunnableConfig.builder()
-                .threadId(agentThreadId(prepared))
+                .threadId(agentThreadId)
                 .addMetadata("user_id", prepared.userId())
                 .build();
         Map<String, Object> input = Map.of(
                 "input", userInput,
-                "chat_id", prepared.sessionId(),
+                "chat_id", agentThreadId,
                 "user_id", prepared.userId()
         );
 
-        CompiledGraph compiledGraph = supervisorAgent.getAndCompileGraph();
+        final CompiledGraph compiledGraph;
+        try {
+            compiledGraph = supervisorAgent.getAndCompileGraph();
+        } catch (Exception e) {
+            return Flux.just(errorEvent(e.getMessage() == null ? "stream failed" : e.getMessage()));
+        }
         PlainTextStreamBuffer replyBuffer = new PlainTextStreamBuffer();
 
         Flux<ServerSentEvent<String>> tokenFlux = compiledGraph.fluxStream(input, runnableConfig)
@@ -199,15 +224,10 @@ public class ChatController {
                 );
                 Map<String, Object> debug = buildMemoryDebugMap(
                         "a2a+nacos",
-                        Map.of(
-                                "memoryProfile", prepared.profile(),
-                                "sessionContext", prepared.sessionContext(),
-                                "effectiveContext", prepared.effectiveContext(),
-                                "categoryResolution", prepared.categoryResolution().toDebugMap(),
-                                "stateDebug", prepared.stateDebug()
-                        ),
+                        baseTurnDebug(prepared, "a2a+nacos"),
                         memoryWrite
                 );
+                debug.put("memoryProfile", prepared.profile());
                 return Flux.just(doneEvent(prepared.sessionId(), reply, debug));
             } catch (Exception e) {
                 log.error(
@@ -226,42 +246,26 @@ public class ChatController {
         });
     }
 
+    private Map<String, Object> baseTurnDebug(ChatPreparedContext prepared, String toolMode) {
+        Map<String, Object> debug = new HashMap<>();
+        TurnDecision decision = prepared.turnDecision();
+        debug.put("toolMode", toolMode);
+        debug.put("turnOutcome", decision.outcome().name());
+        debug.put("categoryReplaced", decision.categoryReplaced());
+        debug.put("categoryReplaceReason", decision.categoryReplaceReason());
+        debug.put("clarificationField", decision.clarificationField());
+        debug.put("sessionContext", prepared.sessionContext());
+        debug.put("effectiveContext", prepared.effectiveContext());
+        debug.put("categoryResolution", prepared.categoryResolution().toDebugMap());
+        debug.put("stateDebug", prepared.stateDebug());
+        return debug;
+    }
+
     private String normalizeAgentReply(String rawReply, Map<String, Object> effectiveContext) {
         if (rawReply == null || rawReply.isBlank() || isInvalidReply(rawReply)) {
             return buildFallbackShoppingReply(effectiveContext);
         }
         return rawReply.trim();
-    }
-
-    private ChatPreparedContext prepareContext(String userId, ChatRequest request, String sessionId) {
-        SessionState sessionState = sessionStoreService.getSession(userId, sessionId);
-        Map<String, Object> profile = memoryClientService.getProfile(userId);
-        SessionProcessResult processed = sessionStateMachine.process(
-                request.getMessage(),
-                sessionState.getSessionContext(),
-                profile
-        );
-        sessionState.setSessionContext(processed.sessionContext());
-        return new ChatPreparedContext(
-                userId,
-                sessionId,
-                sessionState,
-                profile,
-                processed.extractedPatch(),
-                processed.sessionContext(),
-                processed.effectiveContext(),
-                processed.intentType(),
-                processed.categoryResolution(),
-                processed.stateDebug()
-        );
-    }
-
-    private String resolveSessionId(String sessionId) {
-        return (sessionId == null || sessionId.isBlank()) ? UUID.randomUUID().toString() : sessionId;
-    }
-
-    private boolean isSmallTalkOrNonShopping(String intentType) {
-        return "small_talk".equalsIgnoreCase(intentType) || "non_shopping".equalsIgnoreCase(intentType);
     }
 
     private ServerSentEvent<String> sessionEvent(String sessionId) {
@@ -310,15 +314,19 @@ public class ChatController {
         debug.put("memoryPatchMerged", memoryWrite.mergedPatch());
         debug.put("memoryPatchReconciled", memoryWrite.reconciledPatch());
         debug.put("profileWritten", memoryWrite.profileWritten());
-        if (extra.containsKey("stateDebug")) {
-            debug.put("stateDebug", extra.get("stateDebug"));
-        }
         return debug;
     }
 
     private String agentThreadId(ChatPreparedContext prepared) {
         int turnCount = prepared.sessionState().getTurns() == null ? 0 : prepared.sessionState().getTurns().size();
-        return prepared.sessionId() + ":turn:" + turnCount;
+        String threadId = prepared.sessionId() + ":turn:" + turnCount;
+        if (prepared.turnDecision().categoryReplaced()) {
+            Object categoryId = prepared.effectiveContext().get(SessionContextKeys.CATEGORY_ID);
+            if (categoryId != null && !categoryId.toString().isBlank()) {
+                threadId = threadId + ":cat:" + categoryId;
+            }
+        }
+        return threadId;
     }
 
     @SuppressWarnings("unchecked")
@@ -333,11 +341,19 @@ public class ChatController {
         return effectiveContext;
     }
 
-    private String buildUserInput(String message, String userId, Map<String, Object> resolvedConstraints) {
+    private String buildUserInput(
+            String message,
+            String userId,
+            Map<String, Object> resolvedConstraints,
+            boolean categoryReplaced
+    ) {
+        String categorySwitchNotice = categoryReplaced
+                ? "【本轮品类已切换】必须以 resolvedConstraints 中的最新 categoryId 重新调用 searchProduct，禁止沿用上一轮品类或旧搜索结果。\n"
+                : "";
         return """
                 请你作为导购咨询子Agent，基于结构化上下文回答。
                 直接输出给用户看的自然语言回复，不要 JSON、不要 markdown、不要代码块。
-                规则：
+                %s规则：
                 1. resolvedConstraints 是主Agent已经整理好的本次咨询约束，以它为准执行；会话内表达优先于历史画像。
                 2. 调用 searchProduct 时必须优先传 resolvedConstraints.categoryId；仅当 categoryId 为空时才传 categoryRaw。
                 3. 若 userMessage 明确表达与上一轮不同的品类，必须以 resolvedConstraints 中的最新 categoryId 重新调用 searchProduct，禁止沿用上一轮品类结果。
@@ -351,33 +367,7 @@ public class ChatController {
                 userId: %s
                 userMessage: %s
                 resolvedConstraints: %s
-                """.formatted(userId, message, resolvedConstraints);
-    }
-
-    private boolean containsAny(String text, String... words) {
-        if (text == null) {
-            return false;
-        }
-        for (String word : words) {
-            if (text.contains(word)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private String buildSmallTalkReply(String message) {
-        if (message == null || message.isBlank()) {
-            return "你好，我是导购助手。告诉我你想买的品类、预算和使用场景，我就能给你推荐具体款式。";
-        }
-        String text = message.trim();
-        if (containsAny(text, "谢谢", "辛苦了")) {
-            return "不客气。你可以继续告诉我预算、场景或品牌偏好，我会继续帮你筛选。";
-        }
-        if (containsAny(text, "再见", "拜拜")) {
-            return "好的，随时来找我，我可以继续帮你选购。";
-        }
-        return "你好，我在。你想买什么品类？可以直接说预算、使用场景和偏好。";
+                """.formatted(categorySwitchNotice, userId, message, resolvedConstraints);
     }
 
     private boolean isInvalidReply(String reply) {
@@ -390,102 +380,6 @@ public class ChatController {
                 || "null".equals(normalized)
                 || "{}".equals(normalized)
                 || "[]".equals(normalized);
-    }
-
-    private String buildClarificationIfNeeded(Map<String, Object> effectiveContext) {
-        List<?> missingFields = effectiveContext.get("missingFields") instanceof List<?> list ? list : List.of();
-        boolean userUncertain = Boolean.TRUE.equals(effectiveContext.get("userUncertain"));
-        List<String> askedFields = normalizeStringList(effectiveContext.get("askedFields"));
-        String categoryResolution = effectiveContext.get("categoryResolution") == null
-                ? ""
-                : effectiveContext.get("categoryResolution").toString();
-        Object categoryRaw = effectiveContext.get("categoryRaw");
-        Object categoryName = effectiveContext.get("categoryName");
-
-        if (missingFields.contains("categoryConfirm") && !askedFields.contains("categoryConfirm")) {
-            return "您说的「%s」，是指「%s」这个品类吗？可以直接回复“是”或纠正我。"
-                    .formatted(
-                            categoryRaw == null ? "这个商品" : categoryRaw,
-                            categoryName == null ? categoryRaw : categoryName
-                    );
-        }
-        if (missingFields.contains("category")) {
-            if (CategoryResolutionResult.STATUS_SERVICE_UNAVAILABLE.equals(categoryResolution)) {
-                return "类目服务暂时不可用，请稍后再试；你也可以直接说具体品类，如手机、耳机、电脑。";
-            }
-            if (CategoryResolutionResult.STATUS_UNRESOLVED.equals(categoryResolution) && hasValue(categoryRaw)) {
-                return "我暂时没识别到「%s」对应的商品品类，能再说具体一点吗？比如手机、电脑、平板。"
-                        .formatted(categoryRaw);
-            }
-            return "你想买什么品类或商品？可以直接说商品名、预算、使用场景和偏好。";
-        }
-        Object category = categoryLabel(effectiveContext);
-        if (missingFields.contains("budget") && !userUncertain && !askedFields.contains("budget")) {
-            return "收到，你想买%s。请补充一下大概预算；如果暂时不确定，也可以说“先看看”，我会按不同价位给你推荐。"
-                    .formatted(category);
-        }
-        if (missingFields.contains("scene") && !userUncertain && !askedFields.contains("scene")) {
-            return "这个%s主要用在什么场景？比如通勤、办公、学习、运动或游戏。"
-                    .formatted(category);
-        }
-        return null;
-    }
-
-    private void markAskedFields(Map<String, Object> sessionContext, Map<String, Object> effectiveContext) {
-        String nextField = nextClarificationField(effectiveContext);
-        if (nextField == null) {
-            return;
-        }
-        java.util.LinkedHashSet<String> askedFields = new java.util.LinkedHashSet<>(normalizeStringList(sessionContext.get("askedFields")));
-        askedFields.add(nextField);
-        sessionContext.put("askedFields", new ArrayList<>(askedFields));
-    }
-
-    private void markPendingField(
-            Map<String, Object> sessionContext,
-            Map<String, Object> effectiveContext,
-            String question
-    ) {
-        String field = nextClarificationField(effectiveContext);
-        if (field == null) {
-            sessionContext.remove("pendingField");
-            sessionContext.remove("pendingQuestion");
-            return;
-        }
-        sessionContext.put("pendingField", field);
-        sessionContext.put("pendingQuestion", question);
-    }
-
-    private String nextClarificationField(Map<String, Object> effectiveContext) {
-        List<?> missingFields = effectiveContext.get("missingFields") instanceof List<?> list ? list : List.of();
-        boolean userUncertain = Boolean.TRUE.equals(effectiveContext.get("userUncertain"));
-        List<String> askedFields = normalizeStringList(effectiveContext.get("askedFields"));
-        if (missingFields.contains("categoryConfirm") && !askedFields.contains("categoryConfirm")) {
-            return "categoryConfirm";
-        }
-        if (missingFields.contains("category")) {
-            return "category";
-        }
-        if (missingFields.contains("budget") && !userUncertain && !askedFields.contains("budget")) {
-            return "budget";
-        }
-        if (missingFields.contains("scene") && !userUncertain && !askedFields.contains("scene")) {
-            return "scene";
-        }
-        return null;
-    }
-
-    private List<String> normalizeStringList(Object value) {
-        if (!(value instanceof List<?> list)) {
-            return new ArrayList<>();
-        }
-        List<String> result = new ArrayList<>();
-        for (Object item : list) {
-            if (item != null && !item.toString().isBlank()) {
-                result.add(item.toString());
-            }
-        }
-        return result;
     }
 
     private String buildFallbackShoppingReply(Map<String, Object> effectiveContext) {

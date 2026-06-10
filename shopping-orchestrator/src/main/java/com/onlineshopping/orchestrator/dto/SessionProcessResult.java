@@ -8,6 +8,8 @@ public record SessionProcessResult(
         Map<String, Object> effectiveContext,
         String intentType,
         CategoryResolutionResult categoryResolution,
+        boolean categoryReplaced,
+        String categoryReplaceReason,
         Map<String, Object> stateDebug
 ) {
 }

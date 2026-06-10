@@ -64,7 +64,7 @@ public class ContextMergeService {
         if (categoryReplace && SessionContextSupport.hasValue(merged.get(SessionContextKeys.CATEGORY_RAW))) {
             merged.put(SessionContextKeys.CATEGORY_UPDATED_AT, OffsetDateTime.now().toString());
             if (!SessionContextSupport.hasValue(merged.get(SessionContextKeys.CATEGORY_SOURCE))) {
-                merged.put(SessionContextKeys.CATEGORY_SOURCE, "llm");
+                merged.put(SessionContextKeys.CATEGORY_SOURCE, SessionContextKeys.CATEGORY_SOURCE_LLM);
             }
         }
 

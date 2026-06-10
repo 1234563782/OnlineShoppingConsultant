@@ -33,6 +33,16 @@ public class CategoryResolutionService {
         String categoryId = SessionContextSupport.stringValue(sessionContext.get(SessionContextKeys.CATEGORY_ID));
         String categoryResolution = SessionContextSupport.stringValue(sessionContext.get(SessionContextKeys.CATEGORY_RESOLUTION));
 
+        if (currentRaw != null && resolvedRaw != null && !currentRaw.equalsIgnoreCase(resolvedRaw)) {
+            sessionContext.remove(SessionContextKeys.CATEGORY_ID);
+            sessionContext.remove(SessionContextKeys.CATEGORY_NAME);
+            sessionContext.remove(SessionContextKeys.CATEGORY_CONFIDENCE);
+            sessionContext.remove(SessionContextKeys.RESOLVED_CATEGORY_RAW);
+            sessionContext.remove(SessionContextKeys.CATEGORY_RESOLUTION);
+            categoryId = null;
+            categoryResolution = null;
+        }
+
         if (CategoryResolutionResult.STATUS_RESOLVED.equals(categoryResolution)
                 && categoryId != null
                 && canReuseResolvedCategory(currentRaw, resolvedRaw)) {

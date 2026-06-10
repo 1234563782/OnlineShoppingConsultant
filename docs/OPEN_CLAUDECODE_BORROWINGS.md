@@ -162,17 +162,26 @@ SSE 事件类型：`session` / `delta` / `done` / `error`。
 在 `SessionProcessResult` 或独立 DTO 中增加：
 
 ```java
+// 路由枚举（4 类，互斥）— 决定 ChatController 走哪条路
 public enum TurnOutcome {
     SMALL_TALK,           // 闲聊，直接回复
     NON_SHOPPING,         // 非购物，直接回复
     NEED_CLARIFICATION,   // 缺槽位 / 低置信度品类，追问
-    READY_FOR_AGENT,      // 约束已就绪，调用 Consult Agent
-    CATEGORY_REPLACED,    // 本轮发生品类 Replace（可观测）
-    CATEGORY_UNCHANGED    // 品类未变
+    READY_FOR_AGENT       // 约束已就绪，调用 Consult Agent
 }
+
+// 品类变更不走枚举，而是 TurnDecision 元数据（与路由正交）
+public record TurnDecision(
+    TurnOutcome outcome,
+    boolean categoryReplaced,      // 原 CATEGORY_REPLACED / UNCHANGED
+    String categoryReplaceReason,
+    String directReply,
+    String clarification,
+    String clarificationField
+) {}
 ```
 
-`ChatController` 改为 `switch (outcome)`，替代多个布尔判断。
+`ChatController` 改为 `switch (decision.outcome())`，品类观测通过 `decision.categoryReplaced()` 写入 debug。
 
 #### 建议 B：标准化 SSE 事件（P1）
 

@@ -6,10 +6,11 @@ import com.onlineshopping.orchestrator.support.SessionContextSupport;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashSet;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Detects explicit category switches from user message and reconciles extraction patch.
@@ -20,6 +21,14 @@ public class CategoryIntentDetector {
 
     private static final int MIN_TOKEN_LENGTH = 2;
     private static final int MAX_TOKEN_LENGTH = 8;
+
+    /**
+     * Matches switch phrases like「我想再看看电脑」「换成平板」「想买耳机」.
+     * Group 1 is the category token to normalize.
+     */
+    private static final Pattern SWITCH_CATEGORY_PATTERN = Pattern.compile(
+            "(?:再看看|换成|改看|想看|还是看|看看|推荐|想买|要买|买)([^\\s，。！？,.!?:;：；、]{1,8})"
+    );
 
     private final CategoryClientService categoryClientService;
     private final CategoryEquivalenceChecker categoryEquivalenceChecker;
@@ -41,9 +50,31 @@ public class CategoryIntentDetector {
         }
         detectCategoryRaw(userMessage, sessionContext).ifPresent(detected -> {
             patch.put(SessionContextKeys.CATEGORY_RAW, detected);
-            patch.put(SessionContextKeys.CATEGORY_SOURCE, "rule");
+            patch.put(SessionContextKeys.CATEGORY_SOURCE, SessionContextKeys.CATEGORY_SOURCE_RULE);
             patch.put(SessionContextKeys.INTENT_TYPE, "shopping");
         });
+    }
+
+    public boolean isSameCategoryAsSession(Map<String, Object> sessionContext, String categoryRaw) {
+        return categoryEquivalenceChecker.isSameCategoryAsSession(sessionContext, categoryRaw);
+    }
+
+    public boolean isCategorySupportedByUserMessage(
+            String userMessage,
+            String categoryRaw,
+            Map<String, Object> sessionContext
+    ) {
+        String message = SessionContextSupport.stringValue(userMessage);
+        String candidate = SessionContextSupport.stringValue(categoryRaw);
+        if (message == null || candidate == null) {
+            return false;
+        }
+        if (SessionContextSupport.textsOverlap(message, candidate)) {
+            return true;
+        }
+        return detectCategoryRaw(message, sessionContext)
+                .map(detected -> categoryEquivalenceChecker.isSameCategory(detected, candidate))
+                .orElse(false);
     }
 
     public Optional<String> detectCategoryRaw(String userMessage, Map<String, Object> sessionContext) {
@@ -51,11 +82,34 @@ public class CategoryIntentDetector {
             return Optional.empty();
         }
         String message = userMessage.trim();
-        Optional<DetectedCategory> best = selectBestCandidate(message, sessionContext);
+        Optional<DetectedCategory> best = detectFromSwitchPhrase(message, sessionContext);
+        if (best.isEmpty()) {
+            best = selectBestCandidate(message, sessionContext);
+        }
         if (best.isEmpty()) {
             best = selectBestFromSubstrings(message, sessionContext);
         }
         return best.map(DetectedCategory::label);
+    }
+
+    private Optional<DetectedCategory> detectFromSwitchPhrase(String message, Map<String, Object> sessionContext) {
+        Matcher matcher = SWITCH_CATEGORY_PATTERN.matcher(message);
+        DetectedCategory best = null;
+        while (matcher.find()) {
+            String candidate = matcher.group(1).trim();
+            if (candidate.length() < MIN_TOKEN_LENGTH) {
+                continue;
+            }
+            Optional<DetectedCategory> detected = toDetectedCategory(
+                    categoryClientService.normalize(candidate),
+                    candidate,
+                    sessionContext
+            );
+            if (detected.isPresent() && isBetter(detected.get(), best)) {
+                best = detected.get();
+            }
+        }
+        return Optional.ofNullable(best);
     }
 
     private Optional<DetectedCategory> selectBestCandidate(String text, Map<String, Object> sessionContext) {

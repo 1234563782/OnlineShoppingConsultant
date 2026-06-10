@@ -2,6 +2,8 @@ package com.onlineshopping.memory.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.onlineshopping.memory.dto.MemoryRecallRequest;
+import com.onlineshopping.memory.dto.MemoryRecallResponse;
 import com.onlineshopping.memory.dto.MemoryResponse;
 import com.onlineshopping.memory.mapper.UserMemoryMapper;
 import com.onlineshopping.memory.model.UserMemoryEntity;
@@ -11,6 +13,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -29,6 +33,18 @@ public class UserMemoryService {
     );
 
     private static final String RECONCILE_REPLACE_KEY = "_reconcileReplace";
+
+    private static final String SEGMENT_BUDGET = "budget";
+    private static final String SEGMENT_BRANDS = "brands";
+    private static final String SEGMENT_SCENE = "scene";
+    private static final String SEGMENT_NOTES = "notes";
+
+    private static final Map<String, List<String>> SEGMENT_FIELDS = Map.of(
+            SEGMENT_BUDGET, List.of("budgetMin", "budgetMax"),
+            SEGMENT_BRANDS, List.of("brandPreferences", "dislikes"),
+            SEGMENT_SCENE, List.of("scene"),
+            SEGMENT_NOTES, List.of("notes")
+    );
 
     private final UserMemoryMapper userMemoryMapper;
     private final ObjectMapper objectMapper;
@@ -78,6 +94,84 @@ public class UserMemoryService {
 
     public void deleteByUserId(String userId) {
         userMemoryMapper.deleteById(userId);
+    }
+
+    public MemoryRecallResponse recall(String userId, MemoryRecallRequest request) {
+        Map<String, Object> full = getByUserId(userId).getProfileJson();
+        String query = request == null || request.getQuery() == null ? "" : request.getQuery();
+        int topK = request == null || request.getTopK() <= 0 ? 5 : request.getTopK();
+        Set<String> exclude = request == null || request.getExcludeKeys() == null
+                ? Set.of()
+                : new HashSet<>(request.getExcludeKeys());
+
+        LinkedHashSet<String> candidates = new LinkedHashSet<>(selectSegmentKeys(query));
+        candidates.removeAll(exclude);
+
+        Map<String, Object> segments = new LinkedHashMap<>();
+        List<String> recalledKeys = new ArrayList<>();
+        for (String segmentKey : candidates) {
+            if (recalledKeys.size() >= topK) {
+                break;
+            }
+            List<String> fields = SEGMENT_FIELDS.get(segmentKey);
+            if (fields == null) {
+                continue;
+            }
+            boolean hasData = false;
+            for (String field : fields) {
+                Object value = full.get(field);
+                if (value != null) {
+                    segments.put(field, value);
+                    hasData = true;
+                }
+            }
+            if (hasData) {
+                recalledKeys.add(segmentKey);
+            }
+        }
+
+        MemoryRecallResponse response = new MemoryRecallResponse();
+        response.setProfileSegments(segments);
+        response.setRecalledKeys(recalledKeys);
+        return response;
+    }
+
+    private List<String> selectSegmentKeys(String query) {
+        String text = query == null ? "" : query.toLowerCase();
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+
+        if (containsAny(text, "预算", "多少钱", "价位", "价格", "便宜", "贵")) {
+            keys.add(SEGMENT_BUDGET);
+        }
+        if (containsAny(text, "品牌", "牌子", "喜欢", "讨厌", "不喜欢", "偏好")) {
+            keys.add(SEGMENT_BRANDS);
+        }
+        if (containsAny(text, "场景", "用途", "通勤", "办公", "运动", "游戏", "学习")) {
+            keys.add(SEGMENT_SCENE);
+        }
+        if (containsAny(text, "鞋", "衣服", "尺码", "备注", "其他")) {
+            keys.add(SEGMENT_NOTES);
+            keys.add(SEGMENT_BRANDS);
+        }
+        if (containsAny(text, "手机", "电脑", "平板", "耳机", "手表", "相机", "电视", "冰箱", "洗衣机", "推荐", "买")) {
+            keys.add(SEGMENT_BUDGET);
+            keys.add(SEGMENT_BRANDS);
+        }
+
+        if (keys.isEmpty()) {
+            keys.add(SEGMENT_BUDGET);
+            keys.add(SEGMENT_BRANDS);
+        }
+        return new ArrayList<>(keys);
+    }
+
+    private boolean containsAny(String text, String... keywords) {
+        for (String keyword : keywords) {
+            if (text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private MemoryResponse toResponse(UserMemoryEntity entity) {

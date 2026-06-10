@@ -58,6 +58,20 @@ public class SessionStoreService {
         }
     }
 
+    public void saveSession(String userId, String sessionId, SessionState state) {
+        state.setUserId(userId);
+        state.setUpdatedAt(Instant.now().toString());
+        try {
+            redisTemplate.opsForValue().set(
+                    key(userId, sessionId),
+                    objectMapper.writeValueAsString(state),
+                    ttlDays,
+                    TimeUnit.DAYS
+            );
+        } catch (Exception ignored) {
+        }
+    }
+
     public void appendTurns(String userId, String sessionId, SessionState state, String userInput, String assistantReply) {
         List<SessionState.Turn> turns = state.getTurns();
         turns.add(turn("user", userInput));

@@ -474,9 +474,22 @@ shopping-orchestrator/.../orchestrator/
 
 ---
 
-## 17. 后续可扩展（未做）
+## 17. 第三轮改造（证据门控 + budget 修正）
+
+第二轮验收后，又出现「手机 + 预算3000 + 场景追问 → 用户答学习 → 仍推电脑」的路径。根因是 **LLM 在追问抽取时幻觉写入旧 `categoryRaw`**，merge 未校验用户原话证据。
+
+第三轮改动：
+
+- 新增 `CategoryPatchGuard`：merge 前拦截无证据的 LLM 品类替换  
+- `ContextMergeService`：换品类时不再继承旧 `budget`  
+- 单元测试：`CategoryPatchGuardTest`、`ContextMergeServiceTest`
+
+详见 **[CATEGORY_PATCH_GUARD.md](./CATEGORY_PATCH_GUARD.md)**。
+
+---
+
+## 18. 后续可扩展（未做）
 
 - 换品类时是否保留 budget 做成可配置策略  
 - 类目列表缓存，减少子串 normalize 调用  
-- 单元测试覆盖 merge / resolve / reconcile  
 - `sessionContext` 强类型化  

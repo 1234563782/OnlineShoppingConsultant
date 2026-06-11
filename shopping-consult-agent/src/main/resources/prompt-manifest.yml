@@ -1,0 +1,11 @@
+version: 2026.06.11.1
+
+prompts:
+  consult-agent:
+    path: classpath:prompts/system/consult-agent.md
+    stripFrontmatter: true
+
+fragments:
+  output-format: classpath:prompts/fragments/output-format.md
+  product-narration-rules: classpath:prompts/fragments/product-narration-rules.md
+  no-clarification-as-reply: classpath:prompts/fragments/no-clarification-as-reply.md

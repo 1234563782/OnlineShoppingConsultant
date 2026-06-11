@@ -1,0 +1,26 @@
+version: 2026.06.11.1
+
+prompts:
+  context-extraction:
+    path: classpath:prompts/task/context-extraction.md
+  pending-field-extraction:
+    path: classpath:prompts/task/pending-field-extraction.md
+  profile-reconcile:
+    path: classpath:prompts/task/profile-reconcile.md
+  agent-turn-prefetched:
+    path: classpath:prompts/turn/agent-turn-prefetched.md
+  agent-turn-legacy:
+    path: classpath:prompts/turn/agent-turn-legacy.md
+
+fragments:
+  output-format: classpath:prompts/fragments/output-format.md
+  product-narration-rules: classpath:prompts/fragments/product-narration-rules.md
+  no-clarification-as-reply: classpath:prompts/fragments/no-clarification-as-reply.md
+
+routing:
+  consult_turn:
+    when:
+      - condition: prefetched_ok
+        prompt: agent-turn-prefetched
+      - condition: default
+        prompt: agent-turn-legacy

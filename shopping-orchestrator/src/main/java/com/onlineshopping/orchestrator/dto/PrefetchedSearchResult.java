@@ -1,5 +1,7 @@
 package com.onlineshopping.orchestrator.dto;
 
+import com.onlineshopping.prompt.PromptTemplateService;
+
 import java.util.List;
 import java.util.Map;
 
@@ -14,7 +16,7 @@ public record PrefetchedSearchResult(
         List<Map<String, Object>> products,
         Map<String, Object> searchParams,
         String error
-) {
+) implements PromptTemplateService.PrefetchedSearchView {
     public static final String STATUS_OK = "ok";
     public static final String STATUS_SKIPPED = "skipped";
     public static final String STATUS_UNAVAILABLE = "unavailable";

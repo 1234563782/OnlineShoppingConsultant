@@ -67,6 +67,7 @@
 
     <modules>
         <module>shopping-orchestrator</module>
+        <module>shopping-prompt-support</module>
         <module>shopping-consult-agent</module>
         <module>shopping-memory-service</module>
         <module>shopping-catalog-mcp-server</module>

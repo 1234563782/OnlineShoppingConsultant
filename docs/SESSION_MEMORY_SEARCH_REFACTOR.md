@@ -5,6 +5,7 @@
 > - [CATEGORY_SLOT_REFACTOR.md](./CATEGORY_SLOT_REFACTOR.md) — 品类槽位 Replace 与 reconcile 历程  
 > - [CATEGORY_PATCH_GUARD.md](./CATEGORY_PATCH_GUARD.md) — 品类证据门控  
 > - [SEARCH_FIRST_PREFETCH.md](./SEARCH_FIRST_PREFETCH.md) — Orchestrator 先搜后答（预搜索）  
+> - [PROMPT_MANAGEMENT.md](./PROMPT_MANAGEMENT.md) — Prompt Git 文件化与分层加载方案  
 > - [OPEN_CLAUDECODE_BORROWINGS.md](./OPEN_CLAUDECODE_BORROWINGS.md) — P0/P1 借鉴路线图  
 
 ---

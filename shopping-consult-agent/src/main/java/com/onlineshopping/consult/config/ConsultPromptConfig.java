@@ -1,15 +1,20 @@
 package com.onlineshopping.consult.config;
 
-import org.springframework.beans.factory.annotation.Value;
+import com.onlineshopping.prompt.PromptTemplateService;
 import org.springframework.stereotype.Component;
+
+import java.util.Map;
 
 @Component
 public class ConsultPromptConfig {
 
-    @Value("${agent.prompts.consult-agent-instruction}")
-    private String consultAgentInstruction;
+    private final PromptTemplateService promptTemplateService;
+
+    public ConsultPromptConfig(PromptTemplateService promptTemplateService) {
+        this.promptTemplateService = promptTemplateService;
+    }
 
     public String getConsultAgentInstruction() {
-        return consultAgentInstruction;
+        return promptTemplateService.render("consult-agent", Map.of()).content();
     }
 }

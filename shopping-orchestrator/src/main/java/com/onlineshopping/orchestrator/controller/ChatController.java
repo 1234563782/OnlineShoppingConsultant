@@ -1,23 +1,23 @@
 package com.onlineshopping.orchestrator.controller;
 
-import com.alibaba.cloud.ai.graph.CompiledGraph;
-import com.alibaba.cloud.ai.graph.RunnableConfig;
-import com.alibaba.cloud.ai.graph.agent.flow.agent.LlmRoutingAgent;
-import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.onlineshopping.orchestrator.agent.AgentRouter;
+import com.onlineshopping.orchestrator.agent.AgentTarget;
 import com.onlineshopping.orchestrator.auth.AuthSupport;
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
 import com.onlineshopping.orchestrator.dto.ChatRequest;
-import com.onlineshopping.orchestrator.dto.PrefetchedSearchResult;
 import com.onlineshopping.orchestrator.dto.TurnDecision;
 import com.onlineshopping.orchestrator.dto.TurnOutcome;
+import com.onlineshopping.orchestrator.service.A2aStreamingClientService;
+import com.onlineshopping.orchestrator.service.AgentTurnPromptBuilder;
 import com.onlineshopping.orchestrator.service.LongTermMemoryWriteService;
 import com.onlineshopping.orchestrator.service.SessionStoreService;
 import com.onlineshopping.orchestrator.service.UserInputProcessor;
+import com.onlineshopping.prompt.PromptTemplateService;
+import com.onlineshopping.prompt.RenderedPrompt;
 import com.onlineshopping.orchestrator.support.PlainTextStreamBuffer;
 import com.onlineshopping.orchestrator.support.SessionContextKeys;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.slf4j.Logger;
@@ -29,6 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -38,23 +39,32 @@ public class ChatController {
 
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
-    private final LlmRoutingAgent supervisorAgent;
+    private final AgentRouter agentRouter;
+    private final A2aStreamingClientService a2aStreamingClientService;
     private final SessionStoreService sessionStoreService;
     private final UserInputProcessor userInputProcessor;
     private final LongTermMemoryWriteService longTermMemoryWriteService;
+    private final AgentTurnPromptBuilder agentTurnPromptBuilder;
+    private final PromptTemplateService promptTemplateService;
     private final ObjectMapper objectMapper;
 
     public ChatController(
-            @Qualifier("supervisorAgentBean") LlmRoutingAgent supervisorAgent,
+            AgentRouter agentRouter,
+            A2aStreamingClientService a2aStreamingClientService,
             SessionStoreService sessionStoreService,
             UserInputProcessor userInputProcessor,
             LongTermMemoryWriteService longTermMemoryWriteService,
+            AgentTurnPromptBuilder agentTurnPromptBuilder,
+            PromptTemplateService promptTemplateService,
             ObjectMapper objectMapper
     ) {
-        this.supervisorAgent = supervisorAgent;
+        this.agentRouter = agentRouter;
+        this.a2aStreamingClientService = a2aStreamingClientService;
         this.sessionStoreService = sessionStoreService;
         this.userInputProcessor = userInputProcessor;
         this.longTermMemoryWriteService = longTermMemoryWriteService;
+        this.agentTurnPromptBuilder = agentTurnPromptBuilder;
+        this.promptTemplateService = promptTemplateService;
         this.objectMapper = objectMapper;
     }
 
@@ -150,38 +160,18 @@ public class ChatController {
     }
 
     private Flux<ServerSentEvent<String>> streamAgentReply(ChatPreparedContext prepared, ChatRequest request) {
-        String userInput = buildUserInput(
-                request.getMessage(),
-                prepared.userId(),
-                resolvedConstraints(prepared.effectiveContext()),
-                prepared.turnDecision().categoryReplaced(),
-                prepared.prefetchedSearch()
-        );
+        RenderedPrompt agentTurnPrompt = agentTurnPromptBuilder.build(prepared, request);
+        AgentTarget agentTarget = agentRouter.resolve(prepared);
         String agentThreadId = agentThreadId(prepared);
-        RunnableConfig runnableConfig = RunnableConfig.builder()
-                .threadId(agentThreadId)
-                .addMetadata("user_id", prepared.userId())
-                .build();
-        Map<String, Object> input = Map.of(
-                "input", userInput,
-                "chat_id", agentThreadId,
-                "user_id", prepared.userId()
-        );
-
-        final CompiledGraph compiledGraph;
-        try {
-            compiledGraph = supervisorAgent.getAndCompileGraph();
-        } catch (Exception e) {
-            return Flux.just(errorEvent(e.getMessage() == null ? "stream failed" : e.getMessage()));
-        }
         PlainTextStreamBuffer replyBuffer = new PlainTextStreamBuffer();
 
-        Flux<ServerSentEvent<String>> tokenFlux = compiledGraph.fluxStream(input, runnableConfig)
-                .concatMap(output -> {
-                    if (!"a2aNode".equals(output.node()) || !(output instanceof StreamingOutput streamingOutput)) {
-                        return Flux.empty();
-                    }
-                    String chunk = streamingOutput.chunk();
+        Flux<ServerSentEvent<String>> tokenFlux = a2aStreamingClientService.streamMessage(
+                        agentTarget.agentName(),
+                        agentTurnPrompt.content(),
+                        agentThreadId,
+                        prepared.userId()
+                )
+                .concatMap(chunk -> {
                     if (chunk == null || chunk.isBlank() || "Agent State: submitted".equals(chunk)) {
                         return Flux.empty();
                     }
@@ -195,7 +185,7 @@ public class ChatController {
         return Flux.concat(
                 Flux.just(sessionEvent(prepared.sessionId())),
                 tokenFlux,
-                finalizeAgentStream(prepared, request, replyBuffer)
+                finalizeAgentStream(prepared, request, replyBuffer, agentTurnPrompt, agentTarget)
         ).onErrorResume(error -> Flux.just(errorEvent(
                 error.getMessage() == null ? "stream failed" : error.getMessage()
         )));
@@ -204,7 +194,9 @@ public class ChatController {
     private Flux<ServerSentEvent<String>> finalizeAgentStream(
             ChatPreparedContext prepared,
             ChatRequest request,
-            PlainTextStreamBuffer replyBuffer
+            PlainTextStreamBuffer replyBuffer,
+            RenderedPrompt agentTurnPrompt,
+            AgentTarget agentTarget
     ) {
         return Flux.defer(() -> {
             String buffered = replyBuffer.content();
@@ -225,8 +217,8 @@ public class ChatController {
                         request.getMessage()
                 );
                 Map<String, Object> debug = buildMemoryDebugMap(
-                        "a2a+nacos",
-                        baseTurnDebug(prepared, "a2a+nacos"),
+                        "a2a-direct",
+                        baseTurnDebug(prepared, "a2a-direct", agentTurnPrompt, agentTarget),
                         memoryWrite
                 );
                 debug.put("memoryProfile", prepared.profile());
@@ -249,6 +241,15 @@ public class ChatController {
     }
 
     private Map<String, Object> baseTurnDebug(ChatPreparedContext prepared, String toolMode) {
+        return baseTurnDebug(prepared, toolMode, null, null);
+    }
+
+    private Map<String, Object> baseTurnDebug(
+            ChatPreparedContext prepared,
+            String toolMode,
+            RenderedPrompt agentTurnPrompt,
+            AgentTarget agentTarget
+    ) {
         Map<String, Object> debug = new HashMap<>();
         TurnDecision decision = prepared.turnDecision();
         debug.put("toolMode", toolMode);
@@ -263,7 +264,21 @@ public class ChatController {
         if (prepared.prefetchedSearch() != null) {
             debug.put("prefetchedSearch", prepared.prefetchedSearch().toDebugMap());
         }
+        if (agentTurnPrompt != null) {
+            debug.put("prompts", buildPromptDebug(agentTurnPrompt));
+        }
+        if (agentTarget != null) {
+            debug.put("routedAgent", agentTarget.agentName());
+            debug.put("routeReason", agentTarget.reason());
+        }
         return debug;
+    }
+
+    private Map<String, Object> buildPromptDebug(RenderedPrompt agentTurnPrompt) {
+        Map<String, Object> prompts = new LinkedHashMap<>();
+        prompts.put("manifestVersion", promptTemplateService.manifestVersion());
+        prompts.put("agentTurn", agentTurnPrompt.toDebugMap());
+        return prompts;
     }
 
     private String normalizeAgentReply(String rawReply, Map<String, Object> effectiveContext) {
@@ -344,102 +359,6 @@ public class ChatController {
             return (Map<String, Object>) map;
         }
         return effectiveContext;
-    }
-
-    private String buildUserInput(
-            String message,
-            String userId,
-            Map<String, Object> resolvedConstraints,
-            boolean categoryReplaced,
-            PrefetchedSearchResult prefetchedSearch
-    ) {
-        if (prefetchedSearch != null && prefetchedSearch.isUsable()) {
-            return buildPrefetchedUserInput(message, userId, resolvedConstraints, categoryReplaced, prefetchedSearch);
-        }
-        return buildLegacySearchUserInput(message, userId, resolvedConstraints, categoryReplaced, prefetchedSearch);
-    }
-
-    private String buildPrefetchedUserInput(
-            String message,
-            String userId,
-            Map<String, Object> resolvedConstraints,
-            boolean categoryReplaced,
-            PrefetchedSearchResult prefetchedSearch
-    ) {
-        String categorySwitchNotice = categoryReplaced
-                ? "【本轮品类已切换】必须以 prefetchedSearchResult 中的最新商品结果作答，禁止沿用上一轮品类或旧推荐。\n"
-                : "";
-        return """
-                请你作为导购咨询子Agent，基于结构化上下文回答。
-                直接输出给用户看的自然语言回复，不要 JSON、不要 markdown、不要代码块。
-                %s规则：
-                1. resolvedConstraints 是主Agent已经整理好的本次咨询约束；会话内表达优先于历史画像。
-                2. 系统已在 Orchestrator 侧完成商品搜索，结果见 prefetchedSearchResult；禁止调用 searchProduct，禁止自行换搜索条件或重新搜索。
-                3. 只能推荐 prefetchedSearchResult.products 里的商品；名称、价格必须与字段完全一致，禁止编造未返回的型号或改写价格（禁止“约/大概”）。
-                4. 若 products 不足 3 款，只推荐实际返回的数量，禁止凑数编造；若 products 为空，如实说明目录暂无匹配，不要虚构候选。
-                5. 必须如实解释 prefetchedSearchResult.matchType 和 message，不要假装精确命中。
-                6. 你是推荐执行者，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须基于 prefetchedSearchResult 给出具体推荐或说明无货。
-                7. 如果预算缺失或用户说“先看看”，按 prefetchedSearchResult 返回的候选解释不同价位；如果场景缺失，按通用需求假设推荐并说明假设。
-                8. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
-                9. 如需补充库存或优惠，可基于 prefetchedSearchResult.products 里的 skuId 调用 getProductDetail / checkInventory / getPromotions。
-                                
-                userId: %s
-                userMessage: %s
-                resolvedConstraints: %s
-                prefetchedSearchResult: %s
-                """.formatted(
-                categorySwitchNotice,
-                userId,
-                message,
-                resolvedConstraints,
-                prefetchedSearchPayload(prefetchedSearch)
-        );
-    }
-
-    private String buildLegacySearchUserInput(
-            String message,
-            String userId,
-            Map<String, Object> resolvedConstraints,
-            boolean categoryReplaced,
-            PrefetchedSearchResult prefetchedSearch
-    ) {
-        String prefetchNotice = prefetchedSearch != null
-                && PrefetchedSearchResult.STATUS_UNAVAILABLE.equals(prefetchedSearch.status())
-                ? "【预搜索失败】可按 resolvedConstraints 调用 searchProduct 作为降级。\n"
-                : "";
-        String categorySwitchNotice = categoryReplaced
-                ? "【本轮品类已切换】必须以 resolvedConstraints 中的最新 categoryId 重新调用 searchProduct，禁止沿用上一轮品类或旧搜索结果。\n"
-                : "";
-        return """
-                请你作为导购咨询子Agent，基于结构化上下文回答。
-                直接输出给用户看的自然语言回复，不要 JSON、不要 markdown、不要代码块。
-                %s%s规则：
-                1. resolvedConstraints 是主Agent已经整理好的本次咨询约束，以它为准执行；会话内表达优先于历史画像。
-                2. 调用 searchProduct 时必须优先传 resolvedConstraints.categoryId；仅当 categoryId 为空时才传 categoryRaw。
-                3. 若 resolvedConstraints.searchHints.brandKeyword 非空，必须原样传入 searchProduct 的 keyword 参数；预算用 searchHints.budget 的 min/max。
-                4. 搜索兜底由工具按顺序执行：先同品牌同预算，再无预算同品牌，再无品牌同预算，最后同品类其他品牌；你只需解释工具返回的 matchType，不要自行换品牌或编造型号。
-                5. 若 userMessage 明确表达与上一轮不同的品类，必须以 resolvedConstraints 中的最新 categoryId 重新调用 searchProduct，禁止沿用上一轮品类结果。
-                6. 你是推荐执行者，不负责追问缺失字段；缺预算、缺场景或 userUncertain=true 时，也必须调用工具并给出具体推荐。
-                7. 如果预算缺失或用户说“先看看”，按不同价位/常见档位推荐；如果场景缺失，按通用需求假设推荐并说明假设。
-                8. 禁止用“请告诉我预算/用途/场景/方便告诉我吗”等追问替代推荐；推荐后可以附带一句可选补充建议。
-                9. 只能推荐 searchProduct 返回 JSON 中 products 里的商品；名称、价格必须与工具字段完全一致，禁止编造未返回的型号或改写价格（禁止“约/大概”）。
-                10. 若 products 不足 3 款，只推荐实际返回的数量，禁止凑数编造。
-                11. matchType 为 same_brand_other_price 时，说明预算内没有该品牌，改推同品牌其他价位；为 same_category_other_brand_* 时，说明该品牌无货，改推其他品牌，并如实告知。
-                                
-                userId: %s
-                userMessage: %s
-                resolvedConstraints: %s
-                """.formatted(prefetchNotice, categorySwitchNotice, userId, message, resolvedConstraints);
-    }
-
-    private Map<String, Object> prefetchedSearchPayload(PrefetchedSearchResult prefetchedSearch) {
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("status", prefetchedSearch.status());
-        payload.put("matchType", prefetchedSearch.matchType());
-        payload.put("message", prefetchedSearch.message());
-        payload.put("products", prefetchedSearch.products());
-        payload.put("searchParams", prefetchedSearch.searchParams());
-        return payload;
     }
 
     private boolean isInvalidReply(String reply) {

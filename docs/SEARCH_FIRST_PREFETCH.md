@@ -224,6 +224,7 @@ mvn -pl shopping-orchestrator -Dtest=CatalogSearchPrefetchServiceTest test
 |----|------|------|
 | Orchestrator 先搜后答 | **已完成**（本文） | 预搜索 + Prompt 禁止 Agent 再搜 |
 | `ProductReplyValidator` | 未做 | 可直接用 `prefetchedSearch.products` 校验最终回复 |
+| Prompt Git 文件化 | 未做 | 见 [PROMPT_MANAGEMENT.md](./PROMPT_MANAGEMENT.md) |
 | SSE `state` 事件 | 未做 | 可把 `prefetchedSearch` 摘要提前推到流式中途 |
 | 品牌别名配置外置 | 未做 | `BrandIntentDetector` 仍硬编码 |
 

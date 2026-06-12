@@ -26,9 +26,11 @@ public class CompareAgentConfig {
     private static final Set<String> ALLOWED_TOOLS = Set.of("compareProducts");
 
     private final ComparePromptConfig promptConfig;
+    private final AgentLoopLimitProperties loopLimitProperties;
 
-    public CompareAgentConfig(ComparePromptConfig promptConfig) {
+    public CompareAgentConfig(ComparePromptConfig promptConfig, AgentLoopLimitProperties loopLimitProperties) {
         this.promptConfig = promptConfig;
+        this.loopLimitProperties = loopLimitProperties;
     }
 
     @Bean(name = "compareSubAgentBean")
@@ -54,6 +56,9 @@ public class CompareAgentConfig {
             return map;
         };
 
+        int maxIterations = loopLimitProperties.getMaxIterations();
+        log.info("compare_agent maxIterations={}", maxIterations);
+
         return ReactAgent.builder()
                 .name("compare_agent")
                 .description("电商商品对比Agent，负责多 SKU 结构化对比与选购结论")
@@ -63,6 +68,7 @@ public class CompareAgentConfig {
                 .inputKey("query")
                 .outputKey("result")
                 .tools(tools)
+                .maxIterations(maxIterations)
                 .build();
     }
 }

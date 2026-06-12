@@ -42,6 +42,11 @@ spring:
                   service-name: promotion-mcp-server
                   version: 0.0.1
 
+shopping:
+  agent:
+    loop-limit:
+      max-iterations: ${SHOPPING_AGENT_MAX_ITERATIONS:8}
+
 agent:
   prompts:
     consult-agent-id: consult-agent

@@ -36,6 +36,11 @@ spring:
                   service-name: catalog-mcp-server
                   version: 0.0.3
 
+shopping:
+  agent:
+    loop-limit:
+      max-iterations: ${SHOPPING_AGENT_MAX_ITERATIONS:6}
+
 agent:
   prompts:
     compare-agent-id: compare-agent

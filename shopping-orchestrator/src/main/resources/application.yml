@@ -41,6 +41,9 @@ shopping:
       discover: consult_agent
       compare: compare_agent
       shopping: consult_agent
+    a2a:
+      connect-timeout-seconds: ${SHOPPING_A2A_CONNECT_TIMEOUT_SECONDS:30}
+      stream-timeout-seconds: ${SHOPPING_A2A_STREAM_TIMEOUT_SECONDS:120}
   catalog:
     base-url: ${SHOPPING_CATALOG_BASE_URL:http://localhost:8083}
     confidence-threshold: ${SHOPPING_CATALOG_CONFIDENCE_THRESHOLD:0.85}

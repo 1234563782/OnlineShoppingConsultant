@@ -24,9 +24,11 @@ public class ConsultAgentConfig {
     private static final Logger log = LoggerFactory.getLogger(ConsultAgentConfig.class);
 
     private final ConsultPromptConfig promptConfig;
+    private final AgentLoopLimitProperties loopLimitProperties;
 
-    public ConsultAgentConfig(ConsultPromptConfig promptConfig) {
+    public ConsultAgentConfig(ConsultPromptConfig promptConfig, AgentLoopLimitProperties loopLimitProperties) {
         this.promptConfig = promptConfig;
+        this.loopLimitProperties = loopLimitProperties;
     }
 
     @Bean(name = "consultSubAgentBean")
@@ -49,6 +51,9 @@ public class ConsultAgentConfig {
             return map;
         };
 
+        int maxIterations = loopLimitProperties.getMaxIterations();
+        log.info("consult_agent maxIterations={}", maxIterations);
+
         return ReactAgent.builder()
                 .name("consult_agent")
                 .description("电商导购咨询Agent，负责商品搜索、推荐、库存与优惠解读")
@@ -58,6 +63,7 @@ public class ConsultAgentConfig {
                 .inputKey("query")
                 .outputKey("result")
                 .tools(tools)
+                .maxIterations(maxIterations)
                 .build();
     }
 }

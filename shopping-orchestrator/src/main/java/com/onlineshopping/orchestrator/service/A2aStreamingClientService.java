@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
@@ -18,10 +19,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class A2aStreamingClientService {
@@ -30,11 +33,21 @@ public class A2aStreamingClientService {
 
     private final AgentCardProvider agentCardProvider;
     private final ObjectMapper objectMapper;
-    private final HttpClient httpClient = HttpClient.newHttpClient();
+    private final HttpClient httpClient;
+    private final int streamTimeoutSeconds;
 
-    public A2aStreamingClientService(AgentCardProvider agentCardProvider, ObjectMapper objectMapper) {
+    public A2aStreamingClientService(
+            AgentCardProvider agentCardProvider,
+            ObjectMapper objectMapper,
+            @Value("${shopping.agents.a2a.connect-timeout-seconds:30}") int connectTimeoutSeconds,
+            @Value("${shopping.agents.a2a.stream-timeout-seconds:120}") int streamTimeoutSeconds
+    ) {
         this.agentCardProvider = agentCardProvider;
         this.objectMapper = objectMapper;
+        this.streamTimeoutSeconds = streamTimeoutSeconds;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(connectTimeoutSeconds))
+                .build();
     }
 
     public Flux<String> streamMessage(String agentName, String messageText, String threadId, String userId) {
@@ -68,8 +81,15 @@ public class A2aStreamingClientService {
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(response.body(), StandardCharsets.UTF_8)
                 )) {
+                    long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(streamTimeoutSeconds);
                     String line;
                     while ((line = reader.readLine()) != null && !sink.isCancelled()) {
+                        if (System.nanoTime() > deadlineNanos) {
+                            sink.error(new IllegalStateException(
+                                    "A2A stream timeout after " + streamTimeoutSeconds + "s for agent " + agentName
+                            ));
+                            return;
+                        }
                         String trimmed = line.trim();
                         if (!trimmed.startsWith("data:")) {
                             continue;

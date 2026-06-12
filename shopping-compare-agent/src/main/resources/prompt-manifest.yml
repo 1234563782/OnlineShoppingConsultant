@@ -1,0 +1,10 @@
+version: 2026.06.11.1
+
+prompts:
+  compare-agent:
+    path: classpath:prompts/system/compare-agent.md
+    stripFrontmatter: true
+
+fragments:
+  output-format: classpath:prompts/fragments/output-format.md
+  no-clarification-as-reply: classpath:prompts/fragments/no-clarification-as-reply.md

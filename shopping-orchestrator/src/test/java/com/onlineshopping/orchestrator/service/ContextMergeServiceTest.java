@@ -74,6 +74,24 @@ class ContextMergeServiceTest {
                 .containsEntry(SessionContextKeys.BUDGET, newBudget);
     }
 
+    @Test
+    void resetsCompareSubIntentToDiscoverWhenPatchHasNoCompareSignals() {
+        Map<String, Object> current = Map.of(
+                SessionContextKeys.SHOPPING_SUB_INTENT, SessionContextKeys.SUB_INTENT_COMPARE,
+                SessionContextKeys.INTENT_TYPE, "shopping",
+                SessionContextKeys.CATEGORY_RAW, "手机"
+        );
+        Map<String, Object> patch = Map.of(
+                SessionContextKeys.CATEGORY_RAW, "耳机",
+                SessionContextKeys.INTENT_TYPE, "shopping"
+        );
+
+        MergeSessionResult result = contextMergeService.mergeSessionPatch(current, patch);
+
+        assertThat(result.sessionContext())
+                .containsEntry(SessionContextKeys.SHOPPING_SUB_INTENT, SessionContextKeys.SUB_INTENT_DISCOVER);
+    }
+
     private static class AlwaysDifferentCategoryEquivalenceChecker extends CategoryEquivalenceChecker {
         private AlwaysDifferentCategoryEquivalenceChecker() {
             super(null);

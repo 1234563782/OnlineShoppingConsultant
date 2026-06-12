@@ -95,6 +95,13 @@ public class ContextExtractionService {
     private Map<String, Object> fallbackPatch(String userMessage) {
         Map<String, Object> patch = new HashMap<>();
         patch.put("intentType", "shopping");
+        patch.put("shoppingSubIntent", "discover");
+        patch.put("compareTargets", Map.of(
+                "productNames", java.util.List.of(),
+                "ordinalRefs", java.util.List.of(),
+                "skuIds", java.util.List.of()
+        ));
+        patch.put("compareFocus", java.util.List.of());
         patch.put("categoryRaw", null);
         Map<String, Object> budget = new HashMap<>();
         budget.put("min", null);

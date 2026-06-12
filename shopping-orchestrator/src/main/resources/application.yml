@@ -38,6 +38,8 @@ shopping:
   agents:
     default-agent: ${SHOPPING_DEFAULT_AGENT:consult_agent}
     by-intent:
+      discover: consult_agent
+      compare: compare_agent
       shopping: consult_agent
   catalog:
     base-url: ${SHOPPING_CATALOG_BASE_URL:http://localhost:8083}

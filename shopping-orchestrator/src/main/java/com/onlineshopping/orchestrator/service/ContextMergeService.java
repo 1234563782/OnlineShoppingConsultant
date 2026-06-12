@@ -46,6 +46,9 @@ public class ContextMergeService {
         }
 
         mergeIntentType(merged, patch);
+        mergeShoppingSubIntent(merged, patch);
+        copyIfPresent(merged, patch, SessionContextKeys.COMPARE_TARGETS);
+        copyIfPresent(merged, patch, SessionContextKeys.COMPARE_FOCUS);
         copyIfPresent(merged, patch, SessionContextKeys.CATEGORY_RAW);
         copyIfPresent(merged, patch, SessionContextKeys.SCENE);
         copyIfPresent(merged, patch, "notes");
@@ -156,6 +159,9 @@ public class ContextMergeService {
         merged.remove(SessionContextKeys.PENDING_FIELD);
         merged.remove(SessionContextKeys.PENDING_QUESTION);
         merged.remove(SessionContextKeys.RECALLED_MEMORY_KEYS);
+        merged.remove(SessionContextKeys.LAST_RECOMMENDATIONS);
+        merged.remove(SessionContextKeys.COMPARE_TARGETS);
+        merged.remove(SessionContextKeys.COMPARE_FOCUS);
 
         List<String> askedFields = new ArrayList<>(normalizeList(merged.get(SessionContextKeys.ASKED_FIELDS)));
         askedFields.remove("categoryConfirm");
@@ -213,6 +219,60 @@ public class ContextMergeService {
             return;
         }
         target.put(SessionContextKeys.INTENT_TYPE, incoming);
+    }
+
+    private void mergeShoppingSubIntent(Map<String, Object> target, Map<String, Object> source) {
+        Object value = source == null ? null : source.get(SessionContextKeys.SHOPPING_SUB_INTENT);
+        if (SessionContextSupport.hasValue(value)) {
+            target.put(SessionContextKeys.SHOPPING_SUB_INTENT, value.toString().trim().toLowerCase());
+            return;
+        }
+        if (hasCompareSignals(source)) {
+            target.put(SessionContextKeys.SHOPPING_SUB_INTENT, SessionContextKeys.SUB_INTENT_COMPARE);
+            return;
+        }
+        if ("shopping".equalsIgnoreCase(String.valueOf(target.get(SessionContextKeys.INTENT_TYPE)))) {
+            target.put(SessionContextKeys.SHOPPING_SUB_INTENT, SessionContextKeys.SUB_INTENT_DISCOVER);
+            return;
+        }
+        target.put(SessionContextKeys.SHOPPING_SUB_INTENT, SessionContextKeys.SUB_INTENT_DISCOVER);
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean hasCompareSignals(Map<String, Object> source) {
+        if (source == null) {
+            return false;
+        }
+        Object compareTargets = source.get(SessionContextKeys.COMPARE_TARGETS);
+        if (!(compareTargets instanceof Map<?, ?> map)) {
+            return false;
+        }
+        if (!normalizeList(map.get("productNames")).isEmpty()) {
+            return true;
+        }
+        if (!normalizeOrdinalList(map.get("ordinalRefs")).isEmpty()) {
+            return true;
+        }
+        return normalizeList(map.get("skuIds")).size() >= 2;
+    }
+
+    private List<Integer> normalizeOrdinalList(Object raw) {
+        if (!(raw instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Integer> ordinals = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Number number) {
+                ordinals.add(number.intValue());
+            } else if (item != null) {
+                try {
+                    ordinals.add(Integer.parseInt(item.toString().trim()));
+                } catch (NumberFormatException ignored) {
+                    // skip invalid ordinal
+                }
+            }
+        }
+        return ordinals;
     }
 
     private void mergeStringList(Map<String, Object> target, Map<String, Object> source, String key) {

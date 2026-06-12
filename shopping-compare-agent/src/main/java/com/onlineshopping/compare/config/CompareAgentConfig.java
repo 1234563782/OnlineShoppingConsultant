@@ -1,4 +1,4 @@
-package com.onlineshopping.consult.config;
+package com.onlineshopping.compare.config;
 
 import com.alibaba.cloud.ai.graph.KeyStrategy;
 import com.alibaba.cloud.ai.graph.KeyStrategyFactory;
@@ -17,28 +17,33 @@ import org.springframework.context.annotation.Configuration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Set;
 
 @Configuration
-public class ConsultAgentConfig {
+public class CompareAgentConfig {
 
-    private static final Logger log = LoggerFactory.getLogger(ConsultAgentConfig.class);
+    private static final Logger log = LoggerFactory.getLogger(CompareAgentConfig.class);
+    private static final Set<String> ALLOWED_TOOLS = Set.of("compareProducts");
 
-    private final ConsultPromptConfig promptConfig;
+    private final ComparePromptConfig promptConfig;
 
-    public ConsultAgentConfig(ConsultPromptConfig promptConfig) {
+    public CompareAgentConfig(ComparePromptConfig promptConfig) {
         this.promptConfig = promptConfig;
     }
 
-    @Bean(name = "consultSubAgentBean")
-    public ReactAgent consultSubAgentBean(
+    @Bean(name = "compareSubAgentBean")
+    public ReactAgent compareSubAgentBean(
             @Qualifier("dashscopeChatModel") ChatModel chatModel,
             @Autowired(required = false) @Qualifier("loadbalancedMcpSyncToolCallbacks") ToolCallbackProvider nacosToolsProvider
     ) throws Exception {
         List<ToolCallback> tools = new ArrayList<>();
         if (nacosToolsProvider != null) {
             for (ToolCallback callback : nacosToolsProvider.getToolCallbacks()) {
-                tools.add(callback);
-                log.info("consult_agent add mcp tool: {}", callback.getToolDefinition().name());
+                String toolName = callback.getToolDefinition().name();
+                if (ALLOWED_TOOLS.contains(toolName)) {
+                    tools.add(callback);
+                    log.info("compare_agent add mcp tool: {}", toolName);
+                }
             }
         }
 
@@ -50,11 +55,11 @@ public class ConsultAgentConfig {
         };
 
         return ReactAgent.builder()
-                .name("consult_agent")
-                .description("电商导购咨询Agent，负责商品搜索、推荐、库存与优惠解读")
+                .name("compare_agent")
+                .description("电商商品对比Agent，负责多 SKU 结构化对比与选购结论")
                 .model(chatModel)
                 .state(stateFactory)
-                .instruction(promptConfig.getConsultAgentInstruction())
+                .instruction(promptConfig.getCompareAgentInstruction())
                 .inputKey("query")
                 .outputKey("result")
                 .tools(tools)

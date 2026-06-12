@@ -11,6 +11,8 @@ prompts:
     path: classpath:prompts/turn/agent-turn-prefetched.md
   agent-turn-legacy:
     path: classpath:prompts/turn/agent-turn-legacy.md
+  agent-turn-compare:
+    path: classpath:prompts/turn/agent-turn-compare.md
 
 fragments:
   output-format: classpath:prompts/fragments/output-format.md

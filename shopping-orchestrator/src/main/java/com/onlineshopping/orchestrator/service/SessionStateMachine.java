@@ -22,6 +22,7 @@ public class SessionStateMachine {
     private final CategoryIntentDetector categoryIntentDetector;
     private final CategoryPatchGuard categoryPatchGuard;
     private final BrandIntentDetector brandIntentDetector;
+    private final CompareIntentDetector compareIntentDetector;
     private final ContextMergeService contextMergeService;
     private final CategoryResolutionService categoryResolutionService;
 
@@ -31,6 +32,7 @@ public class SessionStateMachine {
             CategoryIntentDetector categoryIntentDetector,
             CategoryPatchGuard categoryPatchGuard,
             BrandIntentDetector brandIntentDetector,
+            CompareIntentDetector compareIntentDetector,
             ContextMergeService contextMergeService,
             CategoryResolutionService categoryResolutionService
     ) {
@@ -39,6 +41,7 @@ public class SessionStateMachine {
         this.categoryIntentDetector = categoryIntentDetector;
         this.categoryPatchGuard = categoryPatchGuard;
         this.brandIntentDetector = brandIntentDetector;
+        this.compareIntentDetector = compareIntentDetector;
         this.contextMergeService = contextMergeService;
         this.categoryResolutionService = categoryResolutionService;
     }
@@ -64,6 +67,7 @@ public class SessionStateMachine {
         categoryIntentDetector.reconcileCategoryPatch(userMessage, currentSessionContext, extractedPatch);
         categoryPatchGuard.removeUnsupportedCategoryReplace(userMessage, currentSessionContext, extractedPatch);
         brandIntentDetector.reconcileBrandPatch(userMessage, extractedPatch);
+        compareIntentDetector.reconcileComparePatch(userMessage, extractedPatch, currentSessionContext);
 
         MergeSessionResult mergeResult = contextMergeService.mergeSessionPatch(
                 currentSessionContext,

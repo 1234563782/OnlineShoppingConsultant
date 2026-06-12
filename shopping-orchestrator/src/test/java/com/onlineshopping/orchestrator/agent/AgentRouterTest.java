@@ -3,10 +3,12 @@ package com.onlineshopping.orchestrator.agent;
 import com.onlineshopping.orchestrator.config.AgentRoutingProperties;
 import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
 import com.onlineshopping.orchestrator.dto.ChatPreparedContext;
+import com.onlineshopping.orchestrator.dto.PrefetchedCompareResult;
 import com.onlineshopping.orchestrator.dto.PrefetchedSearchResult;
 import com.onlineshopping.orchestrator.dto.SessionState;
 import com.onlineshopping.orchestrator.dto.TurnDecision;
 import com.onlineshopping.orchestrator.dto.TurnOutcome;
+import com.onlineshopping.orchestrator.support.SessionContextKeys;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -24,28 +26,38 @@ class AgentRouterTest {
         AgentRoutingProperties properties = new AgentRoutingProperties();
         properties.setDefaultAgent("consult_agent");
         Map<String, String> byIntent = new LinkedHashMap<>();
+        byIntent.put("discover", "consult_agent");
+        byIntent.put("compare", "compare_agent");
         byIntent.put("shopping", "consult_agent");
         properties.setByIntent(byIntent);
         agentRouter = new AgentRouter(properties);
     }
 
     @Test
-    void resolvesConsultAgentForShoppingIntent() {
-        AgentTarget target = agentRouter.resolve(preparedContext("shopping"));
+    void resolvesConsultAgentForDiscoverIntent() {
+        AgentTarget target = agentRouter.resolve(preparedContext("shopping", SessionContextKeys.SUB_INTENT_DISCOVER));
 
         assertEquals("consult_agent", target.agentName());
-        assertEquals("intent=shopping", target.reason());
+        assertEquals("subIntent=discover", target.reason());
     }
 
     @Test
-    void fallsBackToDefaultAgentForUnknownIntent() {
-        AgentTarget target = agentRouter.resolve(preparedContext("order_tracking"));
+    void resolvesCompareAgentForCompareIntent() {
+        AgentTarget target = agentRouter.resolve(preparedContext("shopping", SessionContextKeys.SUB_INTENT_COMPARE));
 
-        assertEquals("consult_agent", target.agentName());
-        assertEquals("intent=order_tracking", target.reason());
+        assertEquals("compare_agent", target.agentName());
+        assertEquals("subIntent=compare", target.reason());
     }
 
-    private ChatPreparedContext preparedContext(String intentType) {
+    @Test
+    void fallsBackToDefaultAgentForUnknownSubIntent() {
+        AgentTarget target = agentRouter.resolve(preparedContext("shopping", "order_tracking"));
+
+        assertEquals("consult_agent", target.agentName());
+        assertEquals("subIntent=order_tracking", target.reason());
+    }
+
+    private ChatPreparedContext preparedContext(String intentType, String shoppingSubIntent) {
         TurnDecision decision = new TurnDecision(
                 TurnOutcome.READY_FOR_AGENT,
                 false,
@@ -63,6 +75,7 @@ class AgentRouterTest {
                 Map.of(),
                 Map.of(),
                 intentType,
+                shoppingSubIntent,
                 new CategoryResolutionResult(
                         CategoryResolutionResult.STATUS_UNRESOLVED,
                         null,
@@ -73,7 +86,8 @@ class AgentRouterTest {
                 ),
                 Map.of(),
                 decision,
-                PrefetchedSearchResult.skipped()
+                PrefetchedSearchResult.skipped(),
+                PrefetchedCompareResult.skipped()
         );
     }
 }

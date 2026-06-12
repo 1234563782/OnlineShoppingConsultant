@@ -10,6 +10,7 @@ import com.onlineshopping.orchestrator.dto.TurnDecision;
 import com.onlineshopping.orchestrator.dto.TurnOutcome;
 import com.onlineshopping.orchestrator.service.A2aStreamingClientService;
 import com.onlineshopping.orchestrator.service.AgentTurnPromptBuilder;
+import com.onlineshopping.orchestrator.service.LastRecommendationsService;
 import com.onlineshopping.orchestrator.service.LongTermMemoryWriteService;
 import com.onlineshopping.orchestrator.service.SessionStoreService;
 import com.onlineshopping.orchestrator.service.UserInputProcessor;
@@ -47,6 +48,7 @@ public class ChatController {
     private final AgentTurnPromptBuilder agentTurnPromptBuilder;
     private final PromptTemplateService promptTemplateService;
     private final ObjectMapper objectMapper;
+    private final LastRecommendationsService lastRecommendationsService;
 
     public ChatController(
             AgentRouter agentRouter,
@@ -56,7 +58,8 @@ public class ChatController {
             LongTermMemoryWriteService longTermMemoryWriteService,
             AgentTurnPromptBuilder agentTurnPromptBuilder,
             PromptTemplateService promptTemplateService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            LastRecommendationsService lastRecommendationsService
     ) {
         this.agentRouter = agentRouter;
         this.a2aStreamingClientService = a2aStreamingClientService;
@@ -66,6 +69,7 @@ public class ChatController {
         this.agentTurnPromptBuilder = agentTurnPromptBuilder;
         this.promptTemplateService = promptTemplateService;
         this.objectMapper = objectMapper;
+        this.lastRecommendationsService = lastRecommendationsService;
     }
 
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -200,7 +204,7 @@ public class ChatController {
     ) {
         return Flux.defer(() -> {
             String buffered = replyBuffer.content();
-            String reply = normalizeAgentReply(buffered, prepared.effectiveContext());
+            String reply = normalizeAgentReply(buffered, prepared.effectiveContext(), prepared.shoppingSubIntent());
             try {
                 sessionStoreService.appendTurns(
                         prepared.userId(),
@@ -209,6 +213,17 @@ public class ChatController {
                         request.getMessage(),
                         reply
                 );
+                if (!SessionContextKeys.SUB_INTENT_COMPARE.equalsIgnoreCase(prepared.shoppingSubIntent())) {
+                    lastRecommendationsService.storeFromPrefetchedSearch(
+                            prepared.sessionState().getSessionContext(),
+                            prepared.prefetchedSearch()
+                    );
+                    sessionStoreService.saveSession(
+                            prepared.userId(),
+                            prepared.sessionId(),
+                            prepared.sessionState()
+                    );
+                }
                 LongTermMemoryWriteService.WriteResult memoryWrite = longTermMemoryWriteService.write(
                         prepared.userId(),
                         prepared.extractedPatch(),
@@ -264,6 +279,10 @@ public class ChatController {
         if (prepared.prefetchedSearch() != null) {
             debug.put("prefetchedSearch", prepared.prefetchedSearch().toDebugMap());
         }
+        if (prepared.prefetchedCompare() != null) {
+            debug.put("prefetchedCompare", prepared.prefetchedCompare().toDebugMap());
+        }
+        debug.put("shoppingSubIntent", prepared.shoppingSubIntent());
         if (agentTurnPrompt != null) {
             debug.put("prompts", buildPromptDebug(agentTurnPrompt));
         }
@@ -281,8 +300,11 @@ public class ChatController {
         return prompts;
     }
 
-    private String normalizeAgentReply(String rawReply, Map<String, Object> effectiveContext) {
+    private String normalizeAgentReply(String rawReply, Map<String, Object> effectiveContext, String shoppingSubIntent) {
         if (rawReply == null || rawReply.isBlank() || isInvalidReply(rawReply)) {
+            if (SessionContextKeys.SUB_INTENT_COMPARE.equalsIgnoreCase(shoppingSubIntent)) {
+                return "我已拿到对比数据，但暂时无法生成完整对比结论。你可以直接说想对比的具体型号或第几款。";
+            }
             return buildFallbackShoppingReply(effectiveContext);
         }
         return rawReply.trim();

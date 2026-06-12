@@ -5,7 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.onlineshopping.catalog.dto.ProductSearchRequest;
 import com.onlineshopping.catalog.dto.ProductSearchResponse;
 import com.onlineshopping.catalog.model.ProductEntity;
+import com.onlineshopping.catalog.dto.ProductCompareRequest;
+import com.onlineshopping.catalog.dto.ProductCompareResponse;
 import com.onlineshopping.catalog.service.CatalogService;
+import com.onlineshopping.catalog.service.ProductCompareService;
 import com.onlineshopping.catalog.service.ProductSearchService;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -19,15 +22,18 @@ public class CatalogMcpTools {
 
     private final CatalogService catalogService;
     private final ProductSearchService productSearchService;
+    private final ProductCompareService productCompareService;
     private final ObjectMapper objectMapper;
 
     public CatalogMcpTools(
             CatalogService catalogService,
             ProductSearchService productSearchService,
+            ProductCompareService productCompareService,
             ObjectMapper objectMapper
     ) {
         this.catalogService = catalogService;
         this.productSearchService = productSearchService;
+        this.productCompareService = productCompareService;
         this.objectMapper = objectMapper;
     }
 
@@ -53,11 +59,37 @@ public class CatalogMcpTools {
         return toJson(response);
     }
 
+    @Tool(name = "compareProducts", description = "对比多个已确定 SKU 的价格、参数、库存与优惠")
+    public String compareProducts(
+            @ToolParam(description = "待对比 skuId 列表，2~4 个") java.util.List<String> skuIds,
+            @ToolParam(description = "用户关注的对比维度，如 价格/续航/降噪；可为空") java.util.List<String> focusDimensions
+    ) {
+        ProductCompareResponse response = productCompareService.compare(new ProductCompareRequest(skuIds, focusDimensions));
+        return toCompareJson(response);
+    }
+
     @Tool(name = "getProductDetail", description = "根据 skuId 获取商品详情")
     public String getProductDetail(@ToolParam(description = "商品skuId") String skuId) {
         return catalogService.findBySkuId(skuId)
                 .map(this::toProductJson)
                 .orElse("{\"message\":\"商品不存在\"}");
+    }
+
+    private String toCompareJson(ProductCompareResponse response) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", response.status());
+        result.put("skuIds", response.skuIds());
+        result.put("products", response.products());
+        result.put("compareDimensions", response.compareDimensions());
+        result.put("crossCategory", response.crossCategory());
+        if (response.message() != null && !response.message().isBlank()) {
+            result.put("message", response.message());
+        }
+        try {
+            return objectMapper.writeValueAsString(result);
+        } catch (JsonProcessingException e) {
+            return "{\"status\":\"unavailable\",\"message\":\"对比结果序列化失败\",\"products\":[]}";
+        }
     }
 
     private String toJson(ProductSearchResponse response) {

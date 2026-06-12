@@ -11,9 +11,11 @@ public record ChatPreparedContext(
         Map<String, Object> sessionContext,
         Map<String, Object> effectiveContext,
         String intentType,
+        String shoppingSubIntent,
         CategoryResolutionResult categoryResolution,
         Map<String, Object> stateDebug,
         TurnDecision turnDecision,
-        PrefetchedSearchResult prefetchedSearch
+        PrefetchedSearchResult prefetchedSearch,
+        PrefetchedCompareResult prefetchedCompare
 ) {
 }

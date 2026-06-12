@@ -22,6 +22,13 @@ public final class SessionContextKeys {
     public static final String PENDING_QUESTION = "pendingQuestion";
     public static final String ASKED_FIELDS = "askedFields";
     public static final String RECALLED_MEMORY_KEYS = "recalledMemoryKeys";
+    public static final String SHOPPING_SUB_INTENT = "shoppingSubIntent";
+    public static final String COMPARE_TARGETS = "compareTargets";
+    public static final String COMPARE_FOCUS = "compareFocus";
+    public static final String LAST_RECOMMENDATIONS = "lastRecommendations";
+
+    public static final String SUB_INTENT_DISCOVER = "discover";
+    public static final String SUB_INTENT_COMPARE = "compare";
 
     /**
      * Scratchpad fields: session-scoped slots written only by the orchestrator.
@@ -43,7 +50,11 @@ public final class SessionContextKeys {
             PENDING_FIELD,
             PENDING_QUESTION,
             ASKED_FIELDS,
-            RECALLED_MEMORY_KEYS
+            RECALLED_MEMORY_KEYS,
+            SHOPPING_SUB_INTENT,
+            COMPARE_TARGETS,
+            COMPARE_FOCUS,
+            LAST_RECOMMENDATIONS
     );
 
     private SessionContextKeys() {

@@ -170,7 +170,7 @@ if (categoryResolution == RESOLVED && categoryId != null) {
 
 ### 3.3 第一轮合并策略（当时）
 
-- 换品类时 **保留 budget**（与后来不同）
+- 换品类时 **不继承旧 budget**（与前一版描述不同，**已修正**）
 - 换品类时清空 scene / mustHave
 - `CategoryIntentDetector.fillIfMissing`：只有 patch 里没有 `categoryRaw` 才调 catalog normalize
 

@@ -348,9 +348,6 @@ public class ContextMergeService {
         if (!hasBudgetValue(resolvedConstraints.get(SessionContextKeys.BUDGET))) {
             missing.add("budget");
         }
-        if (!SessionContextSupport.hasValue(resolvedConstraints.get(SessionContextKeys.SCENE))) {
-            missing.add("scene");
-        }
         return missing;
     }
 }

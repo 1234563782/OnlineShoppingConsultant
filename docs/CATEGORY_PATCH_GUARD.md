@@ -53,7 +53,7 @@ LLM 看到 session 里曾有「电脑」历史，容易在只回答「学习」�
 
 ### 2.3 预算继承
 
-`preserveFieldsOnCategoryReplace()` 曾把旧 `budget` 复制到新品类 session，与文档 §8「换品类默认清空 budget」不一致，会造成「手机导购却带电脑 3000 预算」的检索与话术污染。
+`preserveFieldsOnCategoryReplace()` 曾把旧 `budget` 复制到新品类 session；这类行为与文档 §8「换品类默认清空 budget」不一致，现已按当前代码口径修正，**已修正**。
 
 ---
 

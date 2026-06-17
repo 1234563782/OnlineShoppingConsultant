@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.StringJoiner;
 
 @Service
 public class CatalogSearchPrefetchService {
@@ -55,10 +56,87 @@ public class CatalogSearchPrefetchService {
         }
 
         params.put("limit", searchLimit);
-        if (userMessage != null && !userMessage.isBlank()) {
-            params.put("semanticQuery", userMessage.trim());
+        String semanticQuery = buildSemanticQuery(resolved, budget, brandKeyword, userMessage);
+        if (!semanticQuery.isBlank()) {
+            params.put("semanticQuery", semanticQuery);
         }
         return params;
+    }
+
+    private String buildSemanticQuery(
+            Map<String, Object> resolved,
+            Map<String, Object> budget,
+            Object brandKeyword,
+            String userMessage
+    ) {
+        StringJoiner joiner = new StringJoiner("，");
+        appendFirstPresent(joiner, resolved, "categoryName", "categoryRaw");
+        if (!appendList(joiner, resolved.get("brandPreferences"), "品牌偏好")) {
+            appendValue(joiner, brandKeyword, "品牌偏好");
+        }
+        appendValue(joiner, resolved.get("scene"), "使用场景");
+        appendList(joiner, resolved.get("mustHave"), "必须满足");
+        appendList(joiner, resolved.get("dislikes"), "不喜欢");
+        appendList(joiner, resolved.get("notes"), "补充偏好");
+        appendBudget(joiner, budget);
+        if (userMessage != null && !userMessage.isBlank()) {
+            appendPlain(joiner, userMessage.trim());
+        }
+        return joiner.toString();
+    }
+
+    private void appendFirstPresent(StringJoiner joiner, Map<String, Object> source, String... keys) {
+        for (String key : keys) {
+            Object value = source.get(key);
+            if (hasValue(value)) {
+                appendPlain(joiner, value.toString().trim());
+                return;
+            }
+        }
+    }
+
+    private void appendValue(StringJoiner joiner, Object value, String label) {
+        if (hasValue(value)) {
+            appendPlain(joiner, label + "：" + value.toString().trim());
+        }
+    }
+
+    private boolean appendList(StringJoiner joiner, Object value, String label) {
+        if (!(value instanceof List<?> list) || list.isEmpty()) {
+            return false;
+        }
+        List<String> items = list.stream()
+                .filter(this::hasValue)
+                .map(Object::toString)
+                .map(String::trim)
+                .filter(item -> !item.isBlank())
+                .toList();
+        if (!items.isEmpty()) {
+            appendPlain(joiner, label + "：" + String.join("、", items));
+            return true;
+        }
+        return false;
+    }
+
+    private void appendBudget(StringJoiner joiner, Map<String, Object> budget) {
+        if (budget == null || budget.isEmpty()) {
+            return;
+        }
+        Object min = budget.get("min");
+        Object max = budget.get("max");
+        if (hasValue(min) && hasValue(max)) {
+            appendPlain(joiner, "预算：" + min + "-" + max + "元");
+        } else if (hasValue(min)) {
+            appendPlain(joiner, "预算：" + min + "元以上");
+        } else if (hasValue(max)) {
+            appendPlain(joiner, "预算：" + max + "元以内");
+        }
+    }
+
+    private void appendPlain(StringJoiner joiner, String value) {
+        if (value != null && !value.isBlank()) {
+            joiner.add(value.trim());
+        }
     }
 
     @SuppressWarnings("unchecked")

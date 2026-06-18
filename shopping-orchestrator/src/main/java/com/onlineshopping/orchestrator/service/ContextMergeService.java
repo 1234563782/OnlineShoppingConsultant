@@ -53,6 +53,7 @@ public class ContextMergeService {
         copyIfPresent(merged, patch, SessionContextKeys.SCENE);
         copyIfPresent(merged, patch, "notes");
         copyIfPresent(merged, patch, "userUncertain");
+        copyIfPresent(merged, patch, SessionContextKeys.BUDGET_UNCERTAIN);
         copyIfPresent(merged, patch, SessionContextKeys.CATEGORY_SOURCE);
 
         Object budget = patch.get(SessionContextKeys.BUDGET);
@@ -84,7 +85,7 @@ public class ContextMergeService {
             Map<String, Object> sessionContext,
             Map<String, Object> longTermProfile
     ) {
-        return buildEffectiveContext(sessionContext, longTermProfile, true);
+        return buildEffectiveContext(sessionContext, longTermProfile, true, true);
     }
 
     public Map<String, Object> buildEffectiveContext(
@@ -92,12 +93,22 @@ public class ContextMergeService {
             Map<String, Object> longTermProfile,
             boolean allowLongTermFallback
     ) {
+        return buildEffectiveContext(sessionContext, longTermProfile, allowLongTermFallback, true);
+    }
+
+    public Map<String, Object> buildEffectiveContext(
+            Map<String, Object> sessionContext,
+            Map<String, Object> longTermProfile,
+            boolean allowLongTermFallback,
+            boolean allowBudgetFallback
+    ) {
         Map<String, Object> session = sessionContext == null ? Map.of() : sessionContext;
         Map<String, Object> effective = new HashMap<>(session);
         Map<String, Object> resolvedConstraints = constraintResolver.resolve(
                 session,
                 longTermProfile,
-                allowLongTermFallback
+                allowLongTermFallback,
+                allowBudgetFallback
         );
         effective.put("resolvedConstraints", resolvedConstraints);
         effective.put("longTermFallbackUsed", allowLongTermFallback);
@@ -154,6 +165,8 @@ public class ContextMergeService {
 
     private void applyCategoryReplaceSideEffects(Map<String, Object> merged) {
         clearCategoryDerivedFields(merged);
+        merged.remove(SessionContextKeys.BUDGET);
+        merged.remove(SessionContextKeys.BUDGET_UNCERTAIN);
         merged.remove(SessionContextKeys.SCENE);
         merged.remove(SessionContextKeys.MUST_HAVE);
         merged.remove(SessionContextKeys.PENDING_FIELD);
@@ -165,6 +178,7 @@ public class ContextMergeService {
 
         List<String> askedFields = new ArrayList<>(normalizeList(merged.get(SessionContextKeys.ASKED_FIELDS)));
         askedFields.remove("categoryConfirm");
+        askedFields.remove("budget");
         if (askedFields.isEmpty()) {
             merged.remove(SessionContextKeys.ASKED_FIELDS);
         } else {
@@ -345,9 +359,17 @@ public class ContextMergeService {
             missing.add("category");
         }
 
-        if (!hasBudgetValue(resolvedConstraints.get(SessionContextKeys.BUDGET))) {
+        if (!hasUserProvidedBudget(resolvedConstraints)) {
             missing.add("budget");
         }
         return missing;
+    }
+
+    private boolean hasUserProvidedBudget(Map<String, Object> resolvedConstraints) {
+        if (!hasBudgetValue(resolvedConstraints.get(SessionContextKeys.BUDGET))) {
+            return false;
+        }
+        Object source = resolvedConstraints.get("budgetSource");
+        return source == null || !"long_term_profile".equalsIgnoreCase(source.toString());
     }
 }

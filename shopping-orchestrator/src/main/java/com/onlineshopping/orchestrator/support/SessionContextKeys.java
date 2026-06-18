@@ -16,6 +16,7 @@ public final class SessionContextKeys {
     public static final String CATEGORY_SOURCE_LLM = "llm";
     public static final String CATEGORY_SOURCE_RULE = "rule";
     public static final String BUDGET = "budget";
+    public static final String BUDGET_UNCERTAIN = "budgetUncertain";
     public static final String SCENE = "scene";
     public static final String MUST_HAVE = "mustHave";
     public static final String PENDING_FIELD = "pendingField";
@@ -45,6 +46,7 @@ public final class SessionContextKeys {
             CATEGORY_UPDATED_AT,
             CATEGORY_SOURCE,
             BUDGET,
+            BUDGET_UNCERTAIN,
             SCENE,
             MUST_HAVE,
             PENDING_FIELD,

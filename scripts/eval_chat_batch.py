@@ -276,7 +276,9 @@ def run_case(
     actual_tool_mode = debug.get("toolMode") if isinstance(debug, dict) else None
 
     authorized_products = extract_authorized_products(debug, catalog_index)
-    grounding = evaluate_grounding(reply, authorized_products, catalog_index)
+    grounding = empty_grounding()
+    if not same_text("NEED_CLARIFICATION", actual_turn_outcome):
+        grounding = evaluate_grounding(reply, authorized_products, catalog_index)
 
     intent_match = same_text(case.expected_intent_type, actual_intent_type)
     outcome_match = same_text(case.expected_outcome, actual_turn_outcome)
@@ -559,6 +561,15 @@ def evaluate_grounding(
         "unauthorized_mentions": unauthorized_mentions,
         "price_mismatches": price_mismatches,
         "grounded": bool(mentioned_authorized) and not unauthorized_mentions and not price_mismatches,
+    }
+
+
+def empty_grounding() -> dict[str, Any]:
+    return {
+        "grounded_products": [],
+        "unauthorized_mentions": [],
+        "price_mismatches": [],
+        "grounded": False,
     }
 
 

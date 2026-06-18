@@ -58,9 +58,10 @@ public class ClarificationBuilder {
             );
         }
         Object category = categoryLabel(effectiveContext);
-        if (missingFields.contains("budget") && !userUncertain && !askedFields.contains("budget")) {
+        boolean budgetUncertain = Boolean.TRUE.equals(effectiveContext.get(SessionContextKeys.BUDGET_UNCERTAIN));
+        if (missingFields.contains("budget") && budgetUncertain && !askedFields.contains("budget")) {
             return new Clarification(
-                    "收到，你想买%s。请补充一下大概预算；如果暂时不确定，也可以说“先看看”，我会按不同价位给你推荐。"
+                    "收到，你想买%s。预算还没定的话，可以先告诉我一个大概上限；如果想先看看，也可以回复“先看看”，我会按不同价位给你推荐。"
                             .formatted(category),
                     "budget"
             );

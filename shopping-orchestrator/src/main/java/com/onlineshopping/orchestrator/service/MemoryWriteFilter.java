@@ -34,6 +34,7 @@ public class MemoryWriteFilter {
         filtered.remove("category");
         filtered.remove("intentType");
         filtered.remove("userUncertain");
+        filtered.remove("budgetUncertain");
 
         boolean stable = expressesStablePreference(userMessage);
         if (!stable) {

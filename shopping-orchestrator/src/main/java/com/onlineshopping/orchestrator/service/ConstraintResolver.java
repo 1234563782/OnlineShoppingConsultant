@@ -25,6 +25,15 @@ public class ConstraintResolver {
             Map<String, Object> longTermProfile,
             boolean allowProfileFallback
     ) {
+        return resolve(sessionContext, longTermProfile, allowProfileFallback, true);
+    }
+
+    public Map<String, Object> resolve(
+            Map<String, Object> sessionContext,
+            Map<String, Object> longTermProfile,
+            boolean allowProfileFallback,
+            boolean allowBudgetFallback
+    ) {
         Map<String, Object> session = sessionContext == null ? Map.of() : sessionContext;
         Map<String, Object> profile = longTermProfile == null ? Map.of() : longTermProfile;
         Map<String, Object> resolved = new HashMap<>();
@@ -34,13 +43,14 @@ public class ConstraintResolver {
         copyIfPresent(resolved, session, "categoryRaw");
         copyIfPresent(resolved, session, "scene");
         copyIfPresent(resolved, session, "userUncertain");
+        copyIfPresent(resolved, session, "budgetUncertain");
         copyIfPresent(resolved, session, "intentType");
 
         Object sessionBudget = session.get("budget");
         if (hasBudgetValue(sessionBudget)) {
             resolved.put("budget", sessionBudget);
             resolved.put("budgetSource", "session_context");
-        } else if (allowProfileFallback && shouldFallbackScalar(session, "budget")) {
+        } else if (allowProfileFallback && allowBudgetFallback && shouldFallbackScalar(session, "budget")) {
             Map<String, Object> profileBudget = profileBudget(profile);
             if (!profileBudget.isEmpty()) {
                 resolved.put("budget", profileBudget);

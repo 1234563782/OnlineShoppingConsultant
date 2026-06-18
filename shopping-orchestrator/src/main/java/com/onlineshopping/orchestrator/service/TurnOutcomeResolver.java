@@ -63,7 +63,7 @@ public class TurnOutcomeResolver {
                         categoryReplaced,
                         categoryReplaceReason,
                         null,
-                        "请告诉我你想对比的具体商品，例如「小米 14 和 iPhone 15 哪个好」，或者说「第一款和第二款哪个划算」。",
+                        "请告诉我你想对比的两个具体商品名称，或者直接说“第一款和第二款”。",
                         "compareTargets"
                 );
             }

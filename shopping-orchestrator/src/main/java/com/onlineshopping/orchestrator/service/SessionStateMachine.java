@@ -68,6 +68,7 @@ public class SessionStateMachine {
         categoryPatchGuard.removeUnsupportedCategoryReplace(userMessage, currentSessionContext, extractedPatch);
         brandIntentDetector.reconcileBrandPatch(userMessage, extractedPatch);
         compareIntentDetector.reconcileComparePatch(userMessage, extractedPatch, currentSessionContext);
+        markExplicitBudgetUncertainty(userMessage, extractedPatch);
 
         MergeSessionResult mergeResult = contextMergeService.mergeSessionPatch(
                 currentSessionContext,
@@ -98,7 +99,8 @@ public class SessionStateMachine {
         Map<String, Object> effectiveContext = contextMergeService.buildEffectiveContext(
                 sessionContext,
                 profile == null ? Map.of() : profile,
-                true
+                true,
+                !slots.categoryReplaced()
         );
         effectiveContext.put(
                 SessionContextKeys.CATEGORY_RESOLUTION,
@@ -196,6 +198,46 @@ public class SessionStateMachine {
             return;
         }
         sessionContext.put(SessionContextKeys.PENDING_FIELD, pendingField);
+    }
+
+    private void markExplicitBudgetUncertainty(String userMessage, Map<String, Object> extractedPatch) {
+        if (extractedPatch == null) {
+            return;
+        }
+        if (hasBudgetValue(extractedPatch.get(SessionContextKeys.BUDGET))) {
+            extractedPatch.put(SessionContextKeys.BUDGET_UNCERTAIN, false);
+            return;
+        }
+        extractedPatch.put(SessionContextKeys.BUDGET_UNCERTAIN, explicitlyUnsureAboutBudget(userMessage));
+    }
+
+    private boolean explicitlyUnsureAboutBudget(String userMessage) {
+        if (userMessage == null || userMessage.isBlank()) {
+            return false;
+        }
+        String text = userMessage.trim().toLowerCase(Locale.ROOT);
+        boolean mentionsBudget = text.contains("预算")
+                || text.contains("价位")
+                || text.contains("价格")
+                || text.contains("多少钱")
+                || text.contains("花多少");
+        if (!mentionsBudget) {
+            return false;
+        }
+        return text.contains("没想好")
+                || text.contains("没定")
+                || text.contains("不确定")
+                || text.contains("先不定")
+                || text.contains("没考虑")
+                || text.contains("不知道")
+                || text.contains("不清楚");
+    }
+
+    private boolean hasBudgetValue(Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            return false;
+        }
+        return SessionContextSupport.hasValue(map.get("min")) || SessionContextSupport.hasValue(map.get("max"));
     }
 
     private void applyCategoryConfirmation(

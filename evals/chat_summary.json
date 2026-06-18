@@ -1,33 +1,33 @@
 {
-  "runId": "00673986-d429-4f59-9b7c-ec082d8db4d3",
+  "runId": "96bfce17-950b-44c8-a793-34a287891e86",
   "baseUrl": "http://localhost:8087",
   "casesFile": "C:\\Users\\Administrator.DESKTOP-D2GSM8I\\Desktop\\OnlineShoppingConsultant\\evals\\chat_cases.jsonl",
-  "startedAtMs": 1781423312685,
-  "finishedAtMs": 1781424658582,
+  "startedAtMs": 1781789068639,
+  "finishedAtMs": 1781790532496,
   "totalCases": 200,
   "intentAccuracy": {
-    "passed": 200,
+    "passed": 199,
     "total": 200,
-    "rate": 1.0
+    "rate": 0.995
   },
   "turnOutcomeAccuracy": {
-    "passed": 165,
+    "passed": 195,
     "total": 200,
-    "rate": 0.825
+    "rate": 0.975
   },
   "categoryAccuracy": {
-    "passed": 149,
+    "passed": 159,
     "total": 159,
-    "rate": 0.9371069182389937
+    "rate": 1.0
   },
   "toolHitRate": {
-    "passed": 123,
+    "passed": 142,
     "total": 146,
-    "rate": 0.8424657534246576
+    "rate": 0.9726027397260274
   },
   "hallucinationRate": {
-    "passed": 10,
+    "passed": 2,
     "total": 146,
-    "rate": 0.0684931506849315
+    "rate": 0.0136986301369863
   }
 }

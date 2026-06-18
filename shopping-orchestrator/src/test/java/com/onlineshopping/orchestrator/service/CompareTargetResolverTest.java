@@ -1,12 +1,16 @@
 package com.onlineshopping.orchestrator.service;
 
 import com.onlineshopping.orchestrator.dto.PrefetchedSearchResult;
+import com.onlineshopping.orchestrator.support.SessionContextKeys;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.when;
 
 class CompareTargetResolverTest {
 
@@ -59,5 +63,65 @@ class CompareTargetResolverTest {
         );
 
         assertEquals(List.of("SKU6006", "SKU6004"), targets.skuIds());
+    }
+
+    @Test
+    void resolvesProductNamesGloballyWhenSessionCategoryIsWrong() {
+        CatalogSearchClientService catalogSearchClientService = org.mockito.Mockito.mock(CatalogSearchClientService.class);
+        CompareIntentDetector compareIntentDetector = new CompareIntentDetector();
+        CompareTargetResolver resolver = new CompareTargetResolver(catalogSearchClientService, compareIntentDetector);
+
+        when(catalogSearchClientService.search(argThat(params ->
+                "AlphaPad Ultra".equals(params.get("keyword")) && !params.containsKey("categoryId")
+        ))).thenReturn(PrefetchedSearchResult.ok(
+                "exact",
+                "",
+                List.of(product("SKU3008", "AlphaPad Ultra Laptop", "cat_computer", "电脑")),
+                Map.of()
+        ));
+        when(catalogSearchClientService.search(argThat(params ->
+                "BetaBook Air".equals(params.get("keyword")) && !params.containsKey("categoryId")
+        ))).thenReturn(PrefetchedSearchResult.ok(
+                "exact",
+                "",
+                List.of(product("SKU3009", "BetaBook Air Laptop", "cat_computer", "电脑")),
+                Map.of()
+        ));
+
+        Map<String, Object> sessionContext = new LinkedHashMap<>();
+        sessionContext.put("categoryId", "cat_tablet");
+        sessionContext.put("categoryName", "平板");
+        sessionContext.put("categoryRaw", "平板");
+
+        Map<String, Object> patch = Map.of(
+                "compareTargets", Map.of(
+                        "productNames", List.of("AlphaPad Ultra", "BetaBook Air"),
+                        "ordinalRefs", List.of(),
+                        "skuIds", List.of()
+                )
+        );
+
+        CompareTargetResolver.ResolvedCompareTargets targets = resolver.resolve(
+                sessionContext,
+                patch,
+                "AlphaPad Ultra 和 BetaBook Air 比一下。"
+        );
+
+        assertEquals(List.of("SKU3008", "SKU3009"), targets.skuIds());
+        assertEquals("cat_computer", sessionContext.get("categoryId"));
+        assertEquals("电脑", sessionContext.get("categoryName"));
+        assertEquals(
+                SessionContextKeys.CATEGORY_SOURCE_COMPARE_PRODUCT,
+                sessionContext.get(SessionContextKeys.CATEGORY_SOURCE)
+        );
+    }
+
+    private Map<String, Object> product(String skuId, String name, String categoryId, String categoryName) {
+        return Map.of(
+                "skuId", skuId,
+                "name", name,
+                "categoryId", categoryId,
+                "categoryName", categoryName
+        );
     }
 }

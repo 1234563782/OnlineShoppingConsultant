@@ -1,5 +1,6 @@
 package com.onlineshopping.orchestrator.service;
 
+import com.onlineshopping.orchestrator.dto.CategoryResolutionResult;
 import com.onlineshopping.orchestrator.support.SessionContextKeys;
 import org.springframework.stereotype.Service;
 
@@ -42,8 +43,12 @@ public class CompareTargetResolver {
         skuIds.addAll(normalizeStringList(compareTargets.get("skuIds")));
         skuIds.addAll(extractSkuIdsFromMessage(userMessage));
         skuIds.addAll(resolveOrdinalRefs(lastRecommendations, compareTargets));
-        skuIds.addAll(resolveProductNames(sessionContext, lastRecommendations, compareTargets));
+        List<ResolvedProductTarget> productTargets = resolveProductNames(sessionContext, lastRecommendations, compareTargets);
+        for (ResolvedProductTarget productTarget : productTargets) {
+            skuIds.add(productTarget.skuId());
+        }
         skuIds.addAll(resolveNamesMentionedInMessage(userMessage, lastRecommendations));
+        applyCompareCategoryFromResolvedProducts(sessionContext, productTargets);
 
         List<String> focusDimensions = extractFocusDimensions(extractedPatch, sessionContext);
         return new ResolvedCompareTargets(new ArrayList<>(skuIds), focusDimensions);
@@ -177,7 +182,7 @@ public class CompareTargetResolver {
         return resolved;
     }
 
-    private List<String> resolveProductNames(
+    private List<ResolvedProductTarget> resolveProductNames(
             Map<String, Object> sessionContext,
             List<Map<String, Object>> lastRecommendations,
             Map<String, Object> compareTargets
@@ -188,20 +193,20 @@ public class CompareTargetResolver {
         }
 
         String categoryId = stringValue(sessionContext == null ? null : sessionContext.get(SessionContextKeys.CATEGORY_ID));
-        List<String> resolved = new ArrayList<>();
+        List<ResolvedProductTarget> resolved = new ArrayList<>();
         for (String productName : productNames) {
             if (isOrdinalOnlyName(productName)) {
                 continue;
             }
-            String skuId = resolveProductNameToSku(productName, categoryId, lastRecommendations);
-            if (skuId != null) {
-                resolved.add(skuId);
+            ResolvedProductTarget target = resolveProductName(productName, categoryId, lastRecommendations);
+            if (target != null) {
+                resolved.add(target);
             }
         }
         return resolved;
     }
 
-    private String resolveProductNameToSku(
+    private ResolvedProductTarget resolveProductName(
             String productName,
             String categoryId,
             List<Map<String, Object>> lastRecommendations
@@ -209,11 +214,21 @@ public class CompareTargetResolver {
         if (productName == null || productName.isBlank()) {
             return null;
         }
-        String fromLast = matchLastRecommendations(productName, lastRecommendations);
+        ResolvedProductTarget fromLast = matchLastRecommendations(productName, lastRecommendations);
         if (fromLast != null) {
             return fromLast;
         }
+        ResolvedProductTarget globalMatch = searchProductName(productName, null);
+        if (globalMatch != null) {
+            return globalMatch;
+        }
+        if (categoryId == null || categoryId.isBlank()) {
+            return null;
+        }
+        return searchProductName(productName, categoryId);
+    }
 
+    private ResolvedProductTarget searchProductName(String productName, String categoryId) {
         Map<String, Object> searchParams = new LinkedHashMap<>();
         if (categoryId != null && !categoryId.isBlank()) {
             searchParams.put("categoryId", categoryId);
@@ -227,7 +242,7 @@ public class CompareTargetResolver {
         }
 
         String normalizedQuery = normalizeToken(productName);
-        String bestSku = null;
+        Map<String, Object> bestProduct = null;
         int bestScore = -1;
         for (Map<String, Object> product : searchResult.products()) {
             Object name = product.get("name");
@@ -237,16 +252,15 @@ public class CompareTargetResolver {
             int score = nameMatchScore(normalizedQuery, normalizeToken(name.toString()));
             if (score > bestScore) {
                 bestScore = score;
-                Object skuId = product.get("skuId");
-                bestSku = skuId == null ? null : skuId.toString();
+                bestProduct = product;
             }
         }
-        return bestScore > 0 ? bestSku : null;
+        return bestScore > 0 ? toResolvedProductTarget(bestProduct) : null;
     }
 
-    private String matchLastRecommendations(String productName, List<Map<String, Object>> lastRecommendations) {
+    private ResolvedProductTarget matchLastRecommendations(String productName, List<Map<String, Object>> lastRecommendations) {
         String normalizedQuery = normalizeToken(productName);
-        String bestSku = null;
+        Map<String, Object> bestProduct = null;
         int bestScore = -1;
         for (Map<String, Object> item : lastRecommendations) {
             Object name = item.get("name");
@@ -257,10 +271,57 @@ public class CompareTargetResolver {
             int score = nameMatchScore(normalizedQuery, normalizeToken(name.toString()));
             if (score > bestScore) {
                 bestScore = score;
-                bestSku = skuId.toString();
+                bestProduct = item;
             }
         }
-        return bestScore > 0 ? bestSku : null;
+        return bestScore > 0 ? toResolvedProductTarget(bestProduct) : null;
+    }
+
+    private ResolvedProductTarget toResolvedProductTarget(Map<String, Object> product) {
+        if (product == null) {
+            return null;
+        }
+        Object skuId = product.get("skuId");
+        if (skuId == null || skuId.toString().isBlank()) {
+            return null;
+        }
+        return new ResolvedProductTarget(
+                skuId.toString().trim(),
+                stringValue(product.get(SessionContextKeys.CATEGORY_ID)),
+                stringValue(product.get(SessionContextKeys.CATEGORY_NAME))
+        );
+    }
+
+    private void applyCompareCategoryFromResolvedProducts(
+            Map<String, Object> sessionContext,
+            List<ResolvedProductTarget> productTargets
+    ) {
+        if (sessionContext == null || productTargets.size() < 2) {
+            return;
+        }
+        String categoryId = null;
+        String categoryName = null;
+        for (ResolvedProductTarget target : productTargets) {
+            if (target.categoryId() == null || target.categoryId().isBlank()) {
+                return;
+            }
+            if (categoryId == null) {
+                categoryId = target.categoryId();
+                categoryName = target.categoryName();
+                continue;
+            }
+            if (!categoryId.equalsIgnoreCase(target.categoryId())) {
+                return;
+            }
+        }
+        sessionContext.put(SessionContextKeys.CATEGORY_ID, categoryId);
+        if (categoryName != null && !categoryName.isBlank()) {
+            sessionContext.put(SessionContextKeys.CATEGORY_NAME, categoryName);
+            sessionContext.put(SessionContextKeys.CATEGORY_RAW, categoryName);
+            sessionContext.put(SessionContextKeys.RESOLVED_CATEGORY_RAW, categoryName);
+        }
+        sessionContext.put(SessionContextKeys.CATEGORY_RESOLUTION, CategoryResolutionResult.STATUS_RESOLVED);
+        sessionContext.put(SessionContextKeys.CATEGORY_SOURCE, SessionContextKeys.CATEGORY_SOURCE_COMPARE_PRODUCT);
     }
 
     private int nameMatchScore(String query, String candidate) {
@@ -380,5 +441,8 @@ public class CompareTargetResolver {
     }
 
     public record ResolvedCompareTargets(List<String> skuIds, List<String> focusDimensions) {
+    }
+
+    private record ResolvedProductTarget(String skuId, String categoryId, String categoryName) {
     }
 }

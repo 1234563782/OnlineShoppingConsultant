@@ -15,6 +15,7 @@ public final class SessionContextKeys {
     public static final String CATEGORY_SOURCE = "categorySource";
     public static final String CATEGORY_SOURCE_LLM = "llm";
     public static final String CATEGORY_SOURCE_RULE = "rule";
+    public static final String CATEGORY_SOURCE_COMPARE_PRODUCT = "compare_product";
     public static final String BUDGET = "budget";
     public static final String BUDGET_UNCERTAIN = "budgetUncertain";
     public static final String SCENE = "scene";

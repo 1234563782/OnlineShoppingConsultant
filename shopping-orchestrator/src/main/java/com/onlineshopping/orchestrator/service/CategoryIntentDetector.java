@@ -6,6 +6,7 @@ import com.onlineshopping.orchestrator.support.SessionContextSupport;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -48,7 +49,11 @@ public class CategoryIntentDetector {
         if (patch == null) {
             return;
         }
-        detectCategoryRaw(userMessage, sessionContext).ifPresent(detected -> {
+        String categoryDetectionMessage = categoryDetectionMessage(userMessage, patch);
+        if (categoryDetectionMessage == null || categoryDetectionMessage.isBlank()) {
+            return;
+        }
+        detectCategoryRaw(categoryDetectionMessage, sessionContext).ifPresent(detected -> {
             patch.put(SessionContextKeys.CATEGORY_RAW, detected);
             patch.put(SessionContextKeys.CATEGORY_SOURCE, SessionContextKeys.CATEGORY_SOURCE_RULE);
             patch.put(SessionContextKeys.INTENT_TYPE, "shopping");
@@ -144,6 +149,9 @@ public class CategoryIntentDetector {
             String sourceText,
             Map<String, Object> sessionContext
     ) {
+        if (normalized == null) {
+            return Optional.empty();
+        }
         if (!CategoryResolutionResult.STATUS_RESOLVED.equals(
                 SessionContextSupport.stringValue(normalized.get("status")))) {
             return Optional.empty();
@@ -183,6 +191,77 @@ public class CategoryIntentDetector {
             }
         }
         return false;
+    }
+
+    private boolean isCompareWithNamedProducts(Map<String, Object> patch) {
+        Object subIntent = patch.get(SessionContextKeys.SHOPPING_SUB_INTENT);
+        if (!SessionContextKeys.SUB_INTENT_COMPARE.equalsIgnoreCase(subIntent == null ? "" : subIntent.toString())) {
+            return false;
+        }
+        return !compareProductNames(patch).isEmpty();
+    }
+
+    private String categoryDetectionMessage(String userMessage, Map<String, Object> patch) {
+        if (!isCompareWithNamedProducts(patch)) {
+            return userMessage;
+        }
+        return removeCompareProductNames(userMessage, patch);
+    }
+
+    private List<String> compareProductNames(Map<String, Object> patch) {
+        Object rawTargets = patch.get(SessionContextKeys.COMPARE_TARGETS);
+        if (!(rawTargets instanceof Map<?, ?> targets)) {
+            return List.of();
+        }
+        Object productNames = targets.get("productNames");
+        if (!(productNames instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .map(String::trim)
+                .filter(name -> !name.isBlank())
+                .toList();
+    }
+
+    private String removeCompareProductNames(String userMessage, Map<String, Object> patch) {
+        if (userMessage == null || userMessage.isBlank()) {
+            return userMessage;
+        }
+        String sanitized = userMessage;
+        for (String productName : compareProductNames(patch)) {
+            sanitized = removeProductName(sanitized, productName);
+        }
+        return sanitized
+                .replaceAll("[,，。.!?？;；:：、/|()（）\\[\\]【】]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private String removeProductName(String message, String productName) {
+        String pattern = flexibleLiteralPattern(productName);
+        if (pattern.isBlank()) {
+            return message;
+        }
+        return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE)
+                .matcher(message)
+                .replaceAll(" ");
+    }
+
+    private String flexibleLiteralPattern(String value) {
+        String[] parts = value.trim().split("\\s+");
+        StringBuilder pattern = new StringBuilder();
+        for (String part : parts) {
+            if (part.isBlank()) {
+                continue;
+            }
+            if (pattern.length() > 0) {
+                pattern.append("\\s*");
+            }
+            pattern.append(Pattern.quote(part));
+        }
+        return pattern.toString();
     }
 
     private double confidence(Map<String, Object> normalized) {

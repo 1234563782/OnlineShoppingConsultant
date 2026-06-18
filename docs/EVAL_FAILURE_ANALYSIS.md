@@ -1,281 +1,165 @@
-# 评测失败原因说明
+# 最新评测失败案例分析
 
-本文档解释的是一个很具体的问题：**为什么有些样本从直觉上看应该是对的，但最终评测结果却没有命中预期**。
+这份文档覆盖旧版分析，基于当前最新一轮评测结果重新整理。
 
-这份说明不讨论“要不要改代码”，只解释“为什么会这样”。
+## 结论先说
 
-## 先说结论
+本轮 200 条评测里，系统整体已经比较稳定，当前真正还在失败的只有 5 个 case：
 
-这次 200 条批量评测里，并不是系统整体失效，而是失败集中在少数几类固定场景：
+- 4 个是“用户已经明确说了预算还没定，但系统没有进入澄清”的问题
+- 1 个是“`non_shopping` 被判成 `small_talk`”的意图口径问题
 
-1. 一部分是 **样本预期和当前代码策略不一致**。
-2. 一部分是 **代码本身会更保守地追问，而样本预期偏乐观**。
-3. 一部分是 **compare 链路里类目被误识别，导致后续目标解析失真**。
+另外，旧文档里提到的 `compare` 类问题已经不是当前失败集的一部分了，说明那一块已经修复，不能再按旧结论看。
 
-所以，很多“本来应该对”的结果之所以没对，不是单点随机错误，而是 **评测口径、样本设计、代码策略** 三者里至少有一项没有对齐。
+## 本轮汇总
 
----
+最新评测汇总：
 
-## 本次评测概况
-
-本次运行结果如下：
-
-- `intentAccuracy`: `100%`
-- `turnOutcomeAccuracy`: `82.5%`
-- `categoryAccuracy`: `93.71%`
-- `toolHitRate`: `84.25%`
-- `hallucinationRate`: `6.85%`
+- `intentAccuracy`: `199/200`，`99.5%`
+- `turnOutcomeAccuracy`: `195/200`，`97.5%`
+- `categoryAccuracy`: `159/159`，`100%`
+- `toolHitRate`: `142/146`，`97.26%`
+- `hallucinationRate`: `2/146`，`1.37%`
 
 这说明：
 
-- **意图识别本身是稳定的**，不是“看不懂用户在干什么”。
-- 真正掉分主要集中在：
-  - 是否该追问
-  - compare 是否能顺利进入
-  - 类目是否被错误归一化
+- 类目识别已经全对，当前不再是“类目错分”主导问题
+- 工具命中和幻觉也都在较低水平
+- 目前主要失分点集中在 `turnOutcome`，也就是“该澄清还是该直接推荐”的判断
 
----
+## 当前失败案例清单
 
-## 失败的三类根因
+| Case | 期望 | 实际 | 主要原因 |
+| --- | --- | --- | --- |
+| `case_157_computer_clarify_01` | `NEED_CLARIFICATION` | `READY_FOR_AGENT` | 预算不确定未被稳定识别 |
+| `case_158_computer_clarify_02` | `NEED_CLARIFICATION` | `READY_FOR_AGENT` | 预算不确定未被稳定识别 |
+| `case_159_tablet_clarify_01` | `NEED_CLARIFICATION` | `READY_FOR_AGENT` | 预算不确定未被稳定识别 |
+| `case_162_watch_clarify_02` | `NEED_CLARIFICATION` | `READY_FOR_AGENT` | 预算不确定未被稳定识别 |
+| `case_191_nonshopping_09` | `NON_SHOPPING` | `SMALL_TALK` | 意图分类口径不一致 |
 
-### 1. 样本预期偏乐观，但代码会先追问预算
+## 逐个原因分析
 
-这一类失败最多。
+### 1. 预算明确不确定，但系统没有触发澄清
 
-典型样本是 discovery 类问题，只给了“买什么 + 场景”，但没有明确预算，例如：
+对应 case：
 
-- `case_033_phone_discover_03`
-- `case_041_phone_discover_11`
-- `case_049_headphone_discover_03`
-- `case_065_computer_discover_03`
-- `case_081_tablet_discover_03`
-- `case_113_tv_discover_03`
-
-这些样本在评测文件里被写成了：
-
-- 预期：`READY_FOR_AGENT`
-- 实际：`NEED_CLARIFICATION`
-
-为什么会这样？
-
-因为当前代码在预算缺失时，会优先进入澄清分支。
-
-对应逻辑在：
-
-- [`ClarificationBuilder.java`](C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/ClarificationBuilder.java#L61-L66)
-
-这里的规则很直接：
-
-- 如果 `missingFields` 里有 `budget`
-- 且当前不是“用户自己已经表达不确定”
-- 且还没问过预算
-- 就会先追问预算
-
-所以这类 case 并不是代码“答错了”，而是：
-
-- **样本认为“可以直接推荐”**
-- **代码认为“预算不够，先问清楚再推”**
-
-这属于**评测样本和产品策略没有对齐**。
-
----
-
-### 2. 样本预期需要澄清，但代码会从历史信息或 profile 里补齐预算后直接推荐
-
-这一类也不少，典型是明确说“预算还没定”“价格先不定”的澄清样本，例如：
-
-- `case_153_phone_clarify_01`
-- `case_154_phone_clarify_02`
-- `case_155_headphone_clarify_01`
-- `case_156_headphone_clarify_02`
 - `case_157_computer_clarify_01`
 - `case_158_computer_clarify_02`
 - `case_159_tablet_clarify_01`
-- `case_160_tablet_clarify_02`
-- `case_161_watch_clarify_01`
 - `case_162_watch_clarify_02`
-- `case_163_tv_clarify_01`
-- `case_164_tv_clarify_02`
 
-这些样本的预期是：
+这些样本的共同特征是：
 
-- `NEED_CLARIFICATION`
+- 用户都明确表达了“预算还没确定”
+- 评测期望是先澄清预算，不要直接推荐
+- 但系统最后都走成了 `READY_FOR_AGENT`
 
-但实际经常变成：
+从结果里看，问题不是“完全没看到预算信息”，而是“看到了预算缺失，但没有把它当成必须澄清的强信号”。
 
-- `READY_FOR_AGENT`
+这类问题的核心位置在澄清判断链路，重点看：
 
-原因不是评测脚本错了，而是当前实现会尝试 **profile fallback**：
+- [`shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/ClarificationBuilder.java`](/C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/ClarificationBuilder.java)
+- [`shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/SessionStateMachine.java`](/C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/SessionStateMachine.java)
 
-- 如果会话里预算不完整
-- 但系统认为可以从长期偏好或上下文补回来
-- 就会把预算补齐，然后继续走推荐
+从当前行为看，系统更像是在依赖“预算不确定”这个显式信号是否被识别到，而不是只要看到“预算还没定 / 再想想 / 先不说 / 再考虑一下”就强制澄清。
 
-对应逻辑在：
+所以这里的本质是：
 
-- [`ConstraintResolver.java`](C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/ConstraintResolver.java#L39-L48)
-- [`ConstraintResolver.java`](C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/ConstraintResolver.java#L56-L60)
-- [`ConstraintResolver.java`](C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/ConstraintResolver.java#L115-L133)
+- **不是类目问题**
+- **不是推荐结果问题**
+- **是预算不确定识别和澄清策略的口径偏窄**
 
-这里的核心意思是：
+更直白一点说，就是：
 
-- **预算缺失不一定意味着必须追问**
-- 系统允许“先用长期信息补齐，再继续推荐”
+- 评测希望“先问清楚预算”
+- 代码实际是“只有在识别到足够明确的不确定信号时才问”
 
-所以这类失败的本质是：
+这就导致样本看起来“明明应该澄清”，但系统却直接进入推荐流程。
 
-- **样本期望的是“严格澄清”**
-- **代码策略是“能补就补，补到就直接推荐”**
+### 2. `讲一个笑话` 被判成了 `small_talk`
 
-这不是随机 bug，而是 **策略口径不一致**。
+对应 case：
 
----
+- `case_191_nonshopping_09`
 
-### 3. compare 样本里出现了真实代码问题：类目被误判，导致后续解析偏掉
+这个 case 的期望是：
 
-这一类是最值得注意的，因为它不是“样本太严格”，而是链路里真的有误判。
+- `intentType = non_shopping`
+- `turnOutcome = NON_SHOPPING`
 
-典型 case：
+但实际是：
 
-- `case_130_phone_compare_02`
-- `case_134_headphone_compare_02`
-- `case_138_computer_compare_02`
-- `case_142_tablet_compare_02`
-- `case_146_watch_compare_02`
-- `case_150_tv_compare_02`
+- `intentType = small_talk`
+- `turnOutcome = SMALL_TALK`
 
-这些 case 的现象很一致：
+这个问题更像是**意图分类口径不一致**，不是推荐链路的问题，也不是类目解析的问题。
 
-- 输入明明是手机 / 耳机 / 电脑 / 平板 / 手表 / 电视对比
-- 但 debug 里类目却被解析成了别的品类，典型是 `cat_watch`
-- 最终 compare 目标不够 2 个，系统就退回到澄清
+从代码侧看，`TurnOutcomeResolver` 会直接根据上游 `intentType` 分流：
 
-这一段不是纯评测问题，而是代码链路本身有明显风险：
+- `small_talk` -> `SMALL_TALK`
+- `non_shopping` -> `NON_SHOPPING`
 
-1. 用户消息先经过类目识别
-2. 类目识别如果偏了，后面 compare 目标解析就会跟着偏
-3. compare 目标不够时，`TurnOutcomeResolver` 会直接转澄清
+见：
 
-对应代码在：
+- [`shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/TurnOutcomeResolver.java`](/C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/TurnOutcomeResolver.java)
 
-- [`CategoryIntentDetector.java`](C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/CategoryIntentDetector.java#L80-L92)
-- [`CategoryIntentDetector.java`](C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/CategoryIntentDetector.java#L119-L160)
-- [`CategoryResolutionService.java`](C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/CategoryResolutionService.java#L68-L120)
-- [`CompareTargetResolver.java`](C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/CompareTargetResolver.java#L33-L49)
-- [`TurnOutcomeResolver.java`](C:/Users/Administrator.DESKTOP-D2GSM8I/Desktop/OnlineShoppingConsultant/shopping-orchestrator/src/main/java/com/onlineshopping/orchestrator/service/TurnOutcomeResolver.java#L54-L68)
+也就是说，当前问题出在更上游的意图抽取或评测标注口径上：
 
-尤其是 `TurnOutcomeResolver` 这里：
+- 如果评测认为“讲笑话”必须算 `non_shopping`
+- 那么抽取层就应该稳定输出 `non_shopping`
+- 如果系统现在更倾向把这类输入归到 `small_talk`
+- 那么就是**标注口径和模型输出口径没有统一**
 
-- 如果 compare 目标解析不到 2 个 SKU
-- 就会直接判成 `NEED_CLARIFICATION`
+这个 case 本质上不是“答错内容”，而是“该走哪条意图分支”的分类不一致。
 
-这就解释了为什么有些 compare case 看起来“应该直接比”，最后却变成“请告诉我具体商品”。
+## 目前不是主问题的部分
 
-本质上不是 compare 本身不会做，而是前面的类目和目标解析已经歪了。
+### compare 问题已经不在当前失败集里
 
----
+旧版文档里比较重点提到的 compare 类误判，现在已经修掉了，不属于本轮 5 个失败 case 之一。
 
-## 为什么会出现“明明看起来应该对，却不符合预期”
+这点很重要，因为它说明：
 
-可以把原因分成 4 种理解：
+- 之前的 `compare` 类路由和类目误判已经被修正
+- 当前文档里的失分，不能再按旧版 compare 结论去理解
 
-### A. 预期写得比代码更激进
+### 类目识别本轮是满分
 
-样本认为“只要有商品类型和场景，就应该直接推”。
+`categoryAccuracy = 159/159`，说明当前没有新的类目识别系统性问题。
 
-但代码认为：
+所以本轮的失败不是“品类识别坏了”，而是更细的：
 
-- 没预算，先澄清
-- 类目不稳，先澄清
+- 澄清策略是否应该触发
+- 非购物意图该归到哪一类
 
-这时失败不是 bug，而是 **预期太乐观**。
+## 根因归类
 
----
+可以把当前问题分成两类：
 
-### B. 代码比样本更保守
+### A. 代码逻辑问题
 
-样本写的是“应该问预算”。
+主要是 4 个预算澄清 case。
 
-但代码允许：
+原因不是 SQL、接口、或者商品召回，而是澄清条件判断偏窄，导致“用户说预算没定”时没有稳定走到 `NEED_CLARIFICATION`。
 
-- 从 profile 补预算
-- 从历史上下文补预算
-- 继续走推荐
+### B. 意图口径问题
 
-这时失败不是模型不会，而是 **实现比样本更愿意向前推进**。
+主要是 `case_191_nonshopping_09`。
 
----
+原因是 `non_shopping` 和 `small_talk` 的分界在当前链路里不够统一，导致评测期望和实际输出不一致。
 
-### C. compare 链路的输入被污染
+## 建议的修正方向
 
-一旦类目识别歪了，后面的 SKU 解析、compare 目标解析都会受影响。
-
-这时你看到的结果会很像：
-
-- 明明问的是手机对比
-- 结果系统反而像在问别的品类
-
-这种属于 **上游错误传导到下游**。
-
----
-
-### D. 评测指标是“严格口径”，不是“人类直觉”
-
-这次评测不是看“回复大概像不像对”，而是看：
-
-- 意图是否命中
-- outcome 是否完全一致
-- 类目是否完全一致
-- compare 是否真的拿到了 2 个 SKU
-- 是否出现了未授权商品或价格幻觉
-
-所以哪怕回复“看起来合理”，只要走错了 outcome，评测就会记失败。
-
----
-
-## 这次最关键的判断
-
-如果只回答你一个最核心的问题：
-
-**不是所有失败都是代码坏了。**
-
-更准确地说：
-
-- `discover` 里的一批失败，是样本期望和当前澄清策略不一致
-- `clarify` 里的一批失败，是系统允许 profile fallback，导致它不一定会停下来追问
-- `compare` 里的失败，有真实代码问题，主要是类目误判和 compare 目标解析链路不稳
-
----
-
-## 你后面怎么看这份结果
-
-以后遇到“我觉得它应该对，但结果不对”，建议先分三步看：
-
-1. 先看这个样本到底是 `discover`、`clarify` 还是 `compare`
-2. 再看代码当前策略是“先问”还是“先补齐再推荐”
-3. 最后看是不是类目已经被错分了
-
-这样你就能快速判断：
-
-- 是改样本
-- 是改评测口径
-- 还是改代码
-
----
+1. 把“预算不确定”识别做宽一点，不要只依赖少量固定表达。
+2. 澄清判断最好同时看“缺字段”与“用户显式犹豫表达”，而不是只看其中一个。
+3. 明确 `small_talk` 和 `non_shopping` 的定义边界，保证评测标注、提示词、代码分流三者一致。
+4. 旧的 compare 分析可以保留为历史记录，但不要再当成当前问题集。
 
 ## 结论
 
-这批失败不是单一原因造成的。
+本轮评测的剩余问题已经不多，而且类型很集中：
 
-最主要的问题是：
+- 4 个是预算澄清没触发
+- 1 个是意图分类口径不一致
 
-- **样本期望与当前产品策略没有完全对齐**
-- **部分 compare 样本暴露了真实的类目解析问题**
-
-所以，很多“本来应该对”的 case 之所以不对，不是因为系统整体不行，而是因为：
-
-- 评测标准更严格
-- 样本假设更理想
-- 代码策略更保守或更依赖上下文
-
-这三者没对齐。
+所以现在的重点不是“大改系统”，而是把这两个判断口径再收紧、再对齐一次。

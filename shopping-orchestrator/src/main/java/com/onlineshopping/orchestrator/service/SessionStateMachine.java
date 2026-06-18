@@ -23,6 +23,7 @@ public class SessionStateMachine {
     private final CategoryPatchGuard categoryPatchGuard;
     private final BrandIntentDetector brandIntentDetector;
     private final CompareIntentDetector compareIntentDetector;
+    private final CompareTargetResolver compareTargetResolver;
     private final ContextMergeService contextMergeService;
     private final CategoryResolutionService categoryResolutionService;
 
@@ -33,6 +34,7 @@ public class SessionStateMachine {
             CategoryPatchGuard categoryPatchGuard,
             BrandIntentDetector brandIntentDetector,
             CompareIntentDetector compareIntentDetector,
+            CompareTargetResolver compareTargetResolver,
             ContextMergeService contextMergeService,
             CategoryResolutionService categoryResolutionService
     ) {
@@ -42,6 +44,7 @@ public class SessionStateMachine {
         this.categoryPatchGuard = categoryPatchGuard;
         this.brandIntentDetector = brandIntentDetector;
         this.compareIntentDetector = compareIntentDetector;
+        this.compareTargetResolver = compareTargetResolver;
         this.contextMergeService = contextMergeService;
         this.categoryResolutionService = categoryResolutionService;
     }
@@ -64,10 +67,10 @@ public class SessionStateMachine {
                 pendingField, userMessage, currentSessionContext);
 
         categoryPatchNormalizer.normalize(userMessage, currentSessionContext, extractedPatch);
+        compareIntentDetector.reconcileComparePatch(userMessage, extractedPatch, currentSessionContext);
         categoryIntentDetector.reconcileCategoryPatch(userMessage, currentSessionContext, extractedPatch);
         categoryPatchGuard.removeUnsupportedCategoryReplace(userMessage, currentSessionContext, extractedPatch);
         brandIntentDetector.reconcileBrandPatch(userMessage, extractedPatch);
-        compareIntentDetector.reconcileComparePatch(userMessage, extractedPatch, currentSessionContext);
         markExplicitBudgetUncertainty(userMessage, extractedPatch);
 
         MergeSessionResult mergeResult = contextMergeService.mergeSessionPatch(
@@ -78,6 +81,7 @@ public class SessionStateMachine {
 
         applyPendingFieldResult(sessionContext, pendingField, extractedPatch, userMessage);
         applyCategoryConfirmation(userMessage, pendingField, sessionContext);
+        applyCompareProductCategory(sessionContext, extractedPatch, userMessage);
 
         CategoryResolutionResult categoryResolution = categoryResolutionService.resolve(sessionContext);
         return new SlotProcessResult(
@@ -153,6 +157,21 @@ public class SessionStateMachine {
             debug.put("memoryRecall", memoryDebug);
         }
         return debug;
+    }
+
+    private void applyCompareProductCategory(
+            Map<String, Object> sessionContext,
+            Map<String, Object> extractedPatch,
+            String userMessage
+    ) {
+        if (sessionContext == null) {
+            return;
+        }
+        Object subIntent = sessionContext.get(SessionContextKeys.SHOPPING_SUB_INTENT);
+        if (!SessionContextKeys.SUB_INTENT_COMPARE.equalsIgnoreCase(subIntent == null ? "" : subIntent.toString())) {
+            return;
+        }
+        compareTargetResolver.resolve(sessionContext, extractedPatch, userMessage);
     }
 
     private Map<String, Object> snapshotCategoryFields(Map<String, Object> sessionContext) {
